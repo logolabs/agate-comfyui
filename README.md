@@ -16,7 +16,7 @@ Try it in the browser first, without installing anything:
 
 ## Install
 
-**ComfyUI Manager:** *Manager → Install via Git URL* → `https://github.com/logolabs/agate-comfyui`, then restart ComfyUI.
+**ComfyUI Manager / Registry:** Search for `Agate` or `agate-comfyui` in ComfyUI Manager and click **Install**. You can also find it directly on the [Comfy Registry](https://registry.comfy.org/publishers/logolabs-org/nodes/agate-comfyui). Alternatively, use *Manager → Install via Git URL* with `https://github.com/logolabs/agate-comfyui`, then restart ComfyUI.
 
 **By hand:**
 
