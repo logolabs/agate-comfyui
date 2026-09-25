@@ -1,6 +1,6 @@
 [project]
 name = "agate-comfyui"
-version = "0.3.0"
+version = "0.3.1"
 description = "ComfyUI nodes for Agate, LogoLabs' 260M-parameter text-to-image model: a single-file loader, a sampler that outputs SD 1.x LATENTs (img2img, live previews), an all-in-one 256x256 generator and a plan viewer that shows the thinker's 16x16 layout plan evolving over the denoising steps."
 authors = [{ name = "LogoLabs" }]
 readme = "README.md"

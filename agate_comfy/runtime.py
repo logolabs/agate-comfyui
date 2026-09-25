@@ -371,7 +371,10 @@ class AgateRuntime:
                 on_step(i, t0 + i * dt, x1, self.step_fn.plan)
             z = z + dt * v
             if callback is not None:
-                callback(i + 1, steps, x1)
+                try:
+                    callback(i + 1, steps, x1, self.step_fn.plan)
+                except TypeError:
+                    callback(i + 1, steps, x1)
         return z
 
     @torch.no_grad()

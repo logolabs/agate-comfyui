@@ -65,15 +65,17 @@ def _intermediate_device() -> torch.device:
         return torch.device("cpu")
 
 
-def _progress(steps: int, device: torch.device, previews: bool = True):
-    """-> callback(step, steps, x1) that drives ComfyUI's progress bar and live preview."""
+def _progress(steps: int, device: torch.device, previews: bool = True, preview_mode: str = "side_by_side"):
+    """-> callback(step, steps, x1, plan=None) that drives ComfyUI's progress bar and live preview."""
     try:
         import comfy.utils
         pbar = comfy.utils.ProgressBar(steps)
     except Exception:  # outside ComfyUI
         return None
+    if not previews or preview_mode == "none":
+        return lambda step, total, *args: pbar.update_absolute(step, total, None)
     previewer = None
-    if previews:
+    if preview_mode in ("image", "side_by_side"):
         try:
             import comfy.latent_formats
             import latent_preview
@@ -81,11 +83,41 @@ def _progress(steps: int, device: torch.device, previews: bool = True):
         except Exception as e:
             log.debug("Agate: no latent previewer (%s)", e)
 
-    def callback(step, total, x1):
+    def callback(step, total, x1, plan=None):
         preview = None
-        if previewer is not None:
+        if previewer is not None or (plan is not None and preview_mode in ("plan", "side_by_side")):
             try:
-                preview = previewer.decode_latent_to_preview_image("JPEG", x1)
+                from PIL import Image
+                from .agate_comfy import plan as pv
+                img_im = None
+                if previewer is not None and preview_mode in ("image", "side_by_side"):
+                    ret = previewer.decode_latent_to_preview_image("JPEG", x1)
+                    if isinstance(ret, tuple) and len(ret) >= 2 and hasattr(ret[1], "size"):
+                        img_im = ret[1]
+                    else:
+                        preview = ret
+
+                plan_im = None
+                if plan is not None and preview_mode in ("plan", "side_by_side"):
+                    p_rgb = pv.pca_rgb(plan[:1].float())[0]
+                    target_sz = img_im.size if img_im is not None else (256, 256)
+                    plan_im = Image.fromarray(p_rgb).resize(target_sz, Image.NEAREST)
+
+                if preview_mode == "side_by_side":
+                    if img_im is not None and plan_im is not None:
+                        w, h = img_im.size
+                        comp = Image.new("RGB", (w + plan_im.width, max(h, plan_im.height)))
+                        comp.paste(img_im, (0, 0))
+                        comp.paste(plan_im, (w, 0))
+                        preview = ("JPEG", comp, max(comp.size))
+                    elif img_im is not None and preview is None:
+                        preview = ("JPEG", img_im, max(img_im.size))
+                    elif plan_im is not None and preview is None:
+                        preview = ("JPEG", plan_im, max(plan_im.size))
+                elif preview_mode == "plan" and plan_im is not None:
+                    preview = ("JPEG", plan_im, max(plan_im.size))
+                elif preview_mode == "image" and img_im is not None and preview is None:
+                    preview = ("JPEG", img_im, max(img_im.size))
             except Exception as e:  # a preview must never break sampling
                 log.debug("Agate: preview failed: %s", e)
         pbar.update_absolute(step, total, preview)
@@ -366,10 +398,13 @@ class AgateSampler:
         d["denoise"] = ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01,
                                   "tooltip": "1.0: ignore latent_image's content (txt2img). Lower keeps more "
                                              "of latent_image: sampling starts at t = 1 - denoise."})
+        d["live_preview"] = (["side_by_side", "image", "plan", "none"], {"default": "side_by_side",
+                                  "tooltip": "Live preview on this node during sampling: side_by_side shows "
+                                             "both the developing image and the thinker's 16x16 plan."})
         return {"required": d, "optional": {"latent_image": ("LATENT",)}}
 
     def sample(self, agate, prompt, negative_prompt, seed, steps, cfg, autoguide, batch_size, denoise,
-               latent_image=None):
+               live_preview="side_by_side", latent_image=None):
         r = agate.runtime
         init = None
         if latent_image is not None:
@@ -383,7 +418,8 @@ class AgateSampler:
                 return ({"samples": s.clone()},)
             init = latent_to_model(s)
         z = r.sample(prompt, negative_prompt, seed, steps, cfg, batch_size, autoguide, init_latent=init,
-                     denoise=denoise, callback=_progress(steps, r.device), interrupt=_check_interrupt)
+                     denoise=denoise, callback=_progress(steps, r.device, preview_mode=live_preview),
+                     interrupt=_check_interrupt)
         return ({"samples": model_to_latent(z).to(_intermediate_device())},)
 
 
@@ -397,12 +433,18 @@ class AgateGenerate:
 
     @classmethod
     def INPUT_TYPES(cls):
-        return {"required": _common_inputs()}
+        d = _common_inputs()
+        d["live_preview"] = (["side_by_side", "image", "plan", "none"], {"default": "side_by_side",
+                                  "tooltip": "Live preview on this node during sampling: side_by_side shows "
+                                             "both the developing image and the thinker's 16x16 plan."})
+        return {"required": d}
 
-    def generate(self, agate, prompt, negative_prompt, seed, steps, cfg, autoguide, batch_size):
+    def generate(self, agate, prompt, negative_prompt, seed, steps, cfg, autoguide, batch_size,
+                 live_preview="side_by_side"):
         r = agate.runtime
         z = r.sample(prompt, negative_prompt, seed, steps, cfg, batch_size, autoguide,
-                     callback=_progress(steps, r.device), interrupt=_check_interrupt)
+                     callback=_progress(steps, r.device, preview_mode=live_preview),
+                     interrupt=_check_interrupt)
         return (r.decode(z).contiguous(),)
 
 
