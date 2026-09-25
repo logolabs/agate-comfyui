@@ -61,9 +61,70 @@ class AgateWeights(torch.nn.Module):
         return super()._apply(fn, *args, **kwargs)
 
 
+def _grab_thinker(model: torch.nn.Module, box: list):
+    """Forward hook that keeps the thinker's output m (the plan, (B, C, 16, 16)) in `box`."""
+    thinker = getattr(model, "thinker", None)
+    if thinker is None:
+        return None
+    return thinker.register_forward_hook(lambda mod, inp, out: box.append(out))
+
+
+class _PlanEager(_Eager):
+    """_Eager that also exposes the thinker output of its last call as `.plan`."""
+
+    plan = None
+
+    def __call__(self, z, t, ctx, mask):
+        box = []
+        h = _grab_thinker(self.model, box)
+        try:
+            out = super().__call__(z, t, ctx, mask)
+        finally:
+            if h is not None:
+                h.remove()
+        self.plan = box[0] if box else None
+        return out
+
+
+class _PlanGraphed(_Graphed):
+    """_Graphed that also exposes the thinker output as `.plan`. A hook does not fire when a graph
+    is replayed, but the tensor it saw while the graph was recorded lives in the graph's memory
+    pool and every replay rewrites it (like the graph's output), so keeping a reference to it is
+    enough. The recorded kernels are the same as without it, so sampling is unchanged."""
+
+    plan = None
+
+    def __init__(self, model):
+        super().__init__(model)
+        self._plans, self._last = {}, None
+
+    def _run(self, *a):
+        box = []
+        h = _grab_thinker(self.model, box)
+        try:
+            out = super()._run(*a)
+        finally:
+            if h is not None:
+                h.remove()
+        if box and torch.cuda.is_current_stream_capturing():
+            self._last = box[0]                   # the recording run: keep the graph's own tensor
+        return out
+
+    def __call__(self, z, t, ctx, mask):
+        key = (tuple(z.shape), tuple(ctx.shape))
+        recorded = key in self.cache
+        out = super().__call__(z, t, ctx, mask)
+        if not recorded:
+            self._plans[key] = self._last
+            self._last = None
+        self.plan = self._plans.get(key)
+        return out
+
+
 class _StepFn:
     """The generator's forward, eager or replayed from CUDA graphs (the release's _Graphed/_Eager),
-    re-recorded whenever the weights have moved since the graphs were captured."""
+    re-recorded whenever the weights have moved since the graphs were captured. After each call
+    `.plan` is the thinker's output for that call (valid until the next call)."""
 
     def __init__(self, module: torch.nn.Module, graphs: bool):
         self.module, self.graphs = module, graphs
@@ -76,8 +137,12 @@ class _StepFn:
         sig = tuple(p.data_ptr() for p in self.module.parameters())
         if self._impl is None or sig != self._sig:
             use_graphs = self.graphs and device.type == "cuda"
-            self._impl = _Graphed(self.module) if use_graphs else _Eager(self.module)
+            self._impl = _PlanGraphed(self.module) if use_graphs else _PlanEager(self.module)
             self._sig = sig
+
+    @property
+    def plan(self):
+        return None if self._impl is None else self._impl.plan
 
     def __call__(self, z, t, ctx, mask):
         return self._impl(z, t, ctx, mask)
@@ -164,6 +229,7 @@ class AgateRuntime:
         self._guide_source = guide_source                 # callable -> (gen_sd, text, max_len)
         self.guide = self.guide_step = self.guide_text = None
         self.vae_group = self.vae = None
+        self.taesd_group = self.taesd = None
 
     # -- construction ---------------------------------------------------------------------------
     def _build(self, gen_sd: dict, text: tuple, max_len: int, name: str):
@@ -198,18 +264,37 @@ class AgateRuntime:
             return
         from diffusers import AutoencoderKL, AutoencoderTiny
         vdtype = torch.float16 if self.on_cuda else torch.float32
+        # low_cpu_mem_usage=False: diffusers defaults to True, which needs `accelerate` (not a ComfyUI
+        # dependency) and otherwise logs an "install accelerate" warning on the first decode.
         with torch.inference_mode(False):
             if self.decoder == "taesd":
-                vae = AutoencoderTiny.from_pretrained(self.cfg["fast_vae"], torch_dtype=vdtype)
+                vae = AutoencoderTiny.from_pretrained(self.cfg["fast_vae"], torch_dtype=vdtype,
+                                                      low_cpu_mem_usage=False)
                 self.vae_div = 1.0                            # TAESD decodes the scaled latents directly
             else:
-                vae = AutoencoderKL.from_pretrained(self.cfg["vae"], torch_dtype=vdtype)
+                vae = AutoencoderKL.from_pretrained(self.cfg["vae"], torch_dtype=vdtype,
+                                                    low_cpu_mem_usage=False)
                 self.vae_div = self.vae_scale
         self.vae = vae.eval().requires_grad_(False)
         self.vae_group = _Managed(f"{self.name}:vae", AgateWeights(vdtype, None, vae=self.vae), self.device)
 
+    def ensure_taesd(self):
+        """TAESD for the plan viewer's per-step predictions (the loader's decoder if that is TAESD)."""
+        if self.decoder == "taesd":
+            self.ensure_vae()
+            return
+        if self.taesd is not None:
+            return
+        from diffusers import AutoencoderTiny
+        vdtype = torch.float16 if self.on_cuda else torch.float32
+        with torch.inference_mode(False):
+            taesd = AutoencoderTiny.from_pretrained(self.cfg["fast_vae"], torch_dtype=vdtype,
+                                                    low_cpu_mem_usage=False)
+        self.taesd = taesd.eval().requires_grad_(False)
+        self.taesd_group = _Managed(f"{self.name}:taesd", AgateWeights(vdtype, None, vae=self.taesd), self.device)
+
     def groups(self) -> list:
-        return [g for g in (self.core, self.guide, self.vae_group) if g is not None]
+        return [g for g in (self.core, self.guide, self.vae_group, self.taesd_group) if g is not None]
 
     def release(self) -> None:
         for g in self.groups():
@@ -226,12 +311,14 @@ class AgateRuntime:
     @torch.no_grad()
     def sample(self, prompt: str, negative_prompt: str = "", seed: int = 0, steps: int = 50, cfg: float = 3.0,
                batch_size: int = 1, autoguide: float = 0.0, init_latent: torch.Tensor | None = None,
-               denoise: float = 1.0, callback=None, interrupt=None) -> torch.Tensor:
+               denoise: float = 1.0, callback=None, interrupt=None, on_step=None) -> torch.Tensor:
         """-> z, (B, 4, h, w) float32 on the device, in the model's (scaled SD-VAE) latent space.
 
         init_latent: scaled latents (B, 4, h, w) to start from, or None. Their batch size wins over
         batch_size, and their h, w set the size (Agate was trained at 32 x 32 only).
-        callback(step, steps, x1_estimate) runs after every step; interrupt() may raise."""
+        callback(step, steps, x1_estimate) runs after every step; interrupt() may raise.
+        on_step(i, t, x1_estimate, plan) also runs after every step, with plan the thinker output for
+        the [conditional; unconditional] batch, (2B, C, gh, gw): a buffer the next step overwrites."""
         denoise = float(min(max(denoise, 0.0), 1.0))
         if init_latent is not None:
             n, _, h, w = init_latent.shape
@@ -278,8 +365,10 @@ class AgateRuntime:
             v = vu + cfg * (vc - vu)
             if autoguide:
                 v = v + autoguide * (vc - self.guide_step(z, t, g_ctx, g_mask))
-            if callback is not None:
+            if callback is not None or on_step is not None:
                 x1 = z + (1.0 - (t0 + i * dt)) * v
+            if on_step is not None:
+                on_step(i, t0 + i * dt, x1, self.step_fn.plan)
             z = z + dt * v
             if callback is not None:
                 callback(i + 1, steps, x1)
@@ -292,6 +381,18 @@ class AgateRuntime:
         load_to_device([self.vae_group], int(z.shape[0] * 256 * 2 ** 20))
         x = self.vae.decode((z / self.vae_div).to(self.device, self.vae.dtype)).sample
         return ((x.float().clamp(-1, 1) + 1) / 2).permute(0, 2, 3, 1).cpu()
+
+    @torch.no_grad()
+    def decode_fast(self, z: torch.Tensor, chunk: int = 16) -> torch.Tensor:
+        """Scaled latents -> IMAGE with TAESD (fast; the plan viewer's per-step predictions)."""
+        self.ensure_taesd()
+        group, vae = (self.vae_group, self.vae) if self.decoder == "taesd" else (self.taesd_group, self.taesd)
+        load_to_device([group], int(min(z.shape[0], chunk) * 64 * 2 ** 20))
+        out = []
+        for i in range(0, z.shape[0], chunk):
+            x = vae.decode(z[i:i + chunk].to(self.device, vae.dtype)).sample
+            out.append(((x.float().clamp(-1, 1) + 1) / 2).permute(0, 2, 3, 1).cpu())
+        return torch.cat(out)
 
 
 # ---------------------------------------------------------------------------------------------

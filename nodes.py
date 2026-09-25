@@ -3,6 +3,7 @@
 Agate Loader   -> AGATE_MODEL  (single-file checkpoint from models/agate/, or a release folder / repo id)
 Agate Sampler  -> LATENT       (SD 1.x latent: decode with the stock VAE Decode; optional img2img input)
 Agate Generate -> IMAGE        (all in one: sample + Agate's own SD-VAE / TAESD decode)
+Agate Plan Viewer -> IMAGEs    (the thinker's 16 x 16 plan at every step, as frames; agate_comfy/plan.py)
 
 The model code is the vendored release package (agate_comfy/agate, MIT); agate_comfy/runtime.py
 holds the ComfyUI side: memory management, img2img, previews.
@@ -405,6 +406,96 @@ class AgateGenerate:
         return (r.decode(z).contiguous(),)
 
 
+def _to_image(a) -> torch.Tensor:
+    """uint8 (B, H, W, 3) numpy -> ComfyUI IMAGE (float 0-1) on the intermediate device."""
+    import numpy as np
+    return torch.from_numpy(np.array(a, dtype=np.uint8, copy=True)).float().div_(255).to(_intermediate_device())
+
+
+class AgatePlanViewer:
+    CATEGORY = "LogoLabs/Agate"
+    RETURN_TYPES = ("IMAGE", "IMAGE", "IMAGE", "IMAGE", "IMAGE", "IMAGE", "IMAGE", "LATENT")
+    RETURN_NAMES = ("image", "plan_frames", "region_frames", "prediction_frames", "change_frames", "panel",
+                    "change_curve", "latent")
+    OUTPUT_TOOLTIPS = (
+        "The final image, decoded like Agate Generate (the loader's decoder)",
+        "The thinker's plan at every step (one frame per step): its 640 channels as RGB (PCA fitted over "
+        "all steps, so a colour means the same thing throughout)",
+        "The plan's regions at every step: k-means over the plan cells of all steps, one colour per region",
+        "What the model expects the final image to be at every step (x1 = z + (1 - t) v, decoded with TAESD)",
+        "How much the plan changed since the previous step, per cell (dark blue: not at all, red: most)",
+        "One frame per step: plan | regions | change | prediction with a label. Feed it to Save Animated "
+        "WEBP / Video Combine",
+        "The mean plan change per step, as a plot",
+        "The final SD 1.x LATENT, as Agate Sampler outputs it",
+    )
+    FUNCTION = "view"
+    DESCRIPTION = ("Samples one image and shows how Agate plans it. Agate's thinker lays the picture out on a "
+                   "16 x 16 grid (the plan) and the renderer paints the image from it; this node records the "
+                   "plan at every denoising step and returns it as frames: PCA colours, regions, change, and "
+                   "the model's running prediction of the final image. The image is the same as Agate "
+                   "Sampler's for the same seed.")
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        d = _common_inputs()
+        del d["autoguide"], d["batch_size"]
+        d["regions"] = ("INT", {"default": 6, "min": 2, "max": 10,
+                                "tooltip": "Number of plan regions (k-means clusters) in region_frames"})
+        d["frame_size"] = ("INT", {"default": 256, "min": 64, "max": 1024, "step": 16,
+                                   "tooltip": "Side of each frame in pixels (the 16 x 16 plan is upscaled "
+                                              "with nearest neighbour)"})
+        d["denoise"] = ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01,
+                                  "tooltip": "With latent_image: how much to change it (as in Agate Sampler)"})
+        return {"required": d, "optional": {"latent_image": ("LATENT",)}}
+
+    def view(self, agate, prompt, negative_prompt, seed, steps, cfg, regions, frame_size, denoise=1.0,
+             latent_image=None):
+        import numpy as np
+        from .agate_comfy import plan as pv
+        r = agate.runtime
+        init = None
+        if latent_image is not None:
+            s = latent_image["samples"]
+            if s.ndim != 4 or s.shape[1] != 4:
+                raise ValueError(f"Agate needs an SD 1.x latent (B, 4, H, W); got {tuple(s.shape)}")
+            if s.shape[0] > 1:
+                log.warning("Agate Plan Viewer: latent_image has a batch of %d; using the first", s.shape[0])
+            s = s[:1]
+            if denoise > 0.0:
+                init = latent_to_model(s)
+        if init is None and denoise < 1.0:
+            if latent_image is None:
+                raise ValueError("denoise < 1 needs a latent_image to start from (img2img); "
+                                 "connect one or set denoise to 1.0")
+            raise ValueError("denoise = 0 leaves the latent unchanged: there are no steps to view")
+
+        plans, preds, ts = [], [], []
+
+        def on_step(i, t, x1, plan):
+            if plan is None:
+                raise RuntimeError("Agate Plan Viewer: this model has no thinker output to capture")
+            plans.append(plan[:1].detach().clone())
+            preds.append(x1[:1].detach().clone())
+            ts.append(float(t))
+
+        progress = _progress(steps, r.device)
+        z = r.sample(prompt, negative_prompt, seed, steps, cfg, 1, 0.0, init_latent=init, denoise=denoise,
+                     callback=progress, interrupt=_check_interrupt, on_step=on_step)
+        image = r.decode(z).contiguous()
+        pred = (r.decode_fast(torch.cat(preds)).clamp(0, 1) * 255).round().to(torch.uint8).numpy()
+        A = pv.analyse(torch.cat(plans).float(), int(regions))       # (S, C, gh, gw), on the device
+        F = int(frame_size)
+        plan_f = pv.upscale_nearest(A["pca"], F)
+        reg_f = pv.upscale_nearest(pv.regions_rgb(A["labels"]), F)
+        chg_f = pv.upscale_nearest(pv.heat_rgb(A["change"]), F)
+        pred_f = pv.resize_smooth(pred, F)
+        panel = pv.panels(plan_f, reg_f, chg_f, pred_f, A["curve"], np.array(ts), int(regions))
+        curve = pv.curve_image(A["curve"])[None]
+        return (image, _to_image(plan_f), _to_image(reg_f), _to_image(pred_f), _to_image(chg_f),
+                _to_image(panel), _to_image(curve), {"samples": model_to_latent(z).to(_intermediate_device())})
+
+
 def _hook_unload_all_models() -> None:
     """ComfyUI's "Unload Models" offloads Agate like any other model (its weights are registered
     through ModelPatchers). The hook additionally frees the CUDA graphs' memory pools."""
@@ -434,10 +525,12 @@ NODE_CLASS_MAPPINGS = {
     "AgateLoader": AgateLoader,
     "AgateSampler": AgateSampler,
     "AgateGenerate": AgateGenerate,
+    "AgatePlanViewer": AgatePlanViewer,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "AgateLoader": "Agate Loader",
     "AgateSampler": "Agate Sampler",
     "AgateGenerate": "Agate Generate",
+    "AgatePlanViewer": "Agate Plan Viewer",
 }

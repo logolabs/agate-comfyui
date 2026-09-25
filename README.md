@@ -57,6 +57,7 @@ In [`example_workflows/`](example_workflows) (ComfyUI Manager and the Comfy Regi
 | [`agate_txt2img.json`](example_workflows/agate_txt2img.json) | Agate Loader → **Agate Sampler** → VAE Decode (SD 1.5 VAE) → Save Image |
 | [`agate_generate.json`](example_workflows/agate_generate.json) | Agate Loader → **Agate Generate** → Save Image. No VAE file needed |
 | [`agate_upscale_4x.json`](example_workflows/agate_upscale_4x.json) | txt2img → Upscale Image By (lanczos, 4×) → Save Image, for 1024 × 1024 output |
+| [`agate_plan_viewer.json`](example_workflows/agate_plan_viewer.json) | Agate Loader → **Agate Plan Viewer** → Save Image (final image), Preview Image (per-step panels), Save Animated WEBP (panels at 12 fps), Preview Image (change curve). See [See the plan](#see-the-plan) |
 
 ## Nodes
 
@@ -104,6 +105,44 @@ The all-in-one node: the same inputs as Agate Sampler without the img2img ones, 
 `decoder` into a standard image batch (B × 256 × 256 × 3, floats in 0–1). Use it when you do not have
 an SD 1.5 VAE file. Its images match Sampler → VAE Decode to within 5/255 per pixel (mean 0.2/255), the
 difference between the diffusers and ComfyUI VAE implementations.
+
+## See the plan
+
+Agate does not paint pixels straight from the prompt. Its **thinker** first writes a *plan*: a
+640-channel map on a 16 × 16 grid (one cell per 16 × 16 pixels) that says what goes where. The
+**renderer** then paints the image from that plan alone. **Agate Plan Viewer** samples one image and
+records the plan at every denoising step, so you can watch the layout being decided.
+
+<p align="center"><img src="docs/plan_dog_cat.webp" alt="Agate Plan Viewer panel animation for 'a dog sitting to the left of a cat': plan, regions, change and predicted image over 50 steps" width="100%"></p>
+<p align="center"><sub><i>"a dog sitting to the left of a cat"</i>, seed 0, 50 steps: plan · regions · change · prediction</sub></p>
+<p align="center"><img src="docs/plan_fox_logo.webp" alt="Agate Plan Viewer panel animation for the fox logo prompt" width="100%"></p>
+<p align="center"><sub><i>"a minimalist logo of a fox head, orange, flat design, white background"</i>, seed 0, 50 steps</sub></p>
+
+Inputs are the Sampler's (one image; `autoguide` is not available here) plus `regions` (k, default 6) and
+`frame_size` (default 256 px). All outputs except `latent` are ComfyUI IMAGE batches with one frame per step:
+
+| Output | What it shows |
+|---|---|
+| `image` | The final image, decoded like Agate Generate. It is the same image Agate Sampler gives for the same seed: recording the plan does not change sampling (tested bit for bit, with and without CUDA graphs) |
+| `plan_frames` | The plan as colours: its 640 channels projected to RGB with PCA, fitted once over all steps, so a colour means the same thing at every step |
+| `region_frames` | The plan split into `regions` parts: one k-means over the (per-step centred, normalised) plan cells of all steps, so a region keeps its colour over time |
+| `prediction_frames` | What the model expects the final image to be at that step: x̂₁ = z + (1 − t)·v, decoded with TAESD |
+| `change_frames` | How much each cell of the plan changed since the previous step (1 − cosine similarity; dark blue = unchanged, red = most) |
+| `panel` | The four side by side with a step label. Feed it to *Save Animated WEBP* or VideoHelperSuite's *Video Combine* |
+| `change_curve` | One image: the mean plan change per step |
+| `latent` | The final SD 1.x LATENT, as Agate Sampler outputs it |
+
+What it shows: the plan is decided in the **first few steps**. In the dog-and-cat example the two animals are separate regions by step 6 of 50,
+long before the
+predicted image is sharp, and the plan then stays **almost frozen** through the middle of the trajectory
+while the renderer adds detail. The change curve drops by an order of magnitude after the first steps and
+only rises again in the last few steps, where the plan is refined at the edges.
+
+<p align="center"><img src="docs/plan_change_curve.png" alt="Mean plan change per step for the dog and cat prompt: high at the start, near zero in the middle, rising in the last steps" width="480"></p>
+
+The viewer runs at about the speed of a normal sample: 6.8 s per queued prompt for 50 steps on the RTX 4060,
+most of it ComfyUI encoding the 50 preview PNGs and the animated WEBP (the first run of a session is slower,
+as for the other nodes). The analysis runs on the GPU and needs no extra packages.
 
 ## Tips
 
@@ -175,7 +214,7 @@ AGATE_CKPT=/path/to/agate-preview-001.safetensors AGATE_SOURCE=/path/to/agate-pr
 
 Runs the nodes end to end with `comfy.*` stubbed: LATENT format and scale, Sampler vs Generate, img2img at
 denoise 1 (identical to txt2img) and below, progress and preview callbacks, determinism, batching,
-unload/reload, and the single file against the release pipeline. Without `AGATE_CKPT` the checkpoint is
+unload/reload, the single file against the release pipeline, and the Plan Viewer (output shapes, same image as the Sampler with and without CUDA graphs, stable k-means). Without `AGATE_CKPT` the checkpoint is
 downloaded. `tests/workflows_api/` holds the example workflows in API format for posting to a running
 ComfyUI's `/prompt`. Set `AGATE_EXAMPLE=docs/example.png` to re-render the example image.
 

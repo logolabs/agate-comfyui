@@ -1,0 +1,90 @@
+{
+  "1": {
+    "class_type": "AgateLoader",
+    "_meta": {
+      "title": "Agate Loader"
+    },
+    "inputs": {
+      "checkpoint": "agate-preview-001.safetensors",
+      "decoder": "sd-vae",
+      "device": "auto",
+      "cuda_graphs": true,
+      "load_guide": false,
+      "model_folder": ""
+    }
+  },
+  "2": {
+    "class_type": "AgatePlanViewer",
+    "_meta": {
+      "title": "Agate Plan Viewer"
+    },
+    "inputs": {
+      "prompt": "a dog sitting to the left of a cat",
+      "negative_prompt": "",
+      "seed": 0,
+      "steps": 50,
+      "cfg": 3.0,
+      "regions": 6,
+      "frame_size": 256,
+      "denoise": 1.0,
+      "agate": [
+        "1",
+        0
+      ]
+    }
+  },
+  "3": {
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "Final image"
+    },
+    "inputs": {
+      "filename_prefix": "agate_plan_image",
+      "images": [
+        "2",
+        0
+      ]
+    }
+  },
+  "4": {
+    "class_type": "PreviewImage",
+    "_meta": {
+      "title": "Panel"
+    },
+    "inputs": {
+      "images": [
+        "2",
+        5
+      ]
+    }
+  },
+  "5": {
+    "class_type": "SaveAnimatedWEBP",
+    "_meta": {
+      "title": "Panel animation"
+    },
+    "inputs": {
+      "filename_prefix": "agate_plan",
+      "fps": 12.0,
+      "lossless": false,
+      "quality": 85,
+      "method": "default",
+      "images": [
+        "2",
+        5
+      ]
+    }
+  },
+  "6": {
+    "class_type": "PreviewImage",
+    "_meta": {
+      "title": "Mean plan change per step"
+    },
+    "inputs": {
+      "images": [
+        "2",
+        6
+      ]
+    }
+  }
+}
