@@ -1,0 +1,31 @@
+[project]
+name = "comfyui-agate"
+version = "0.1.0"
+description = "ComfyUI nodes for Agate, LogoLabs' 260M-parameter text-to-image model: a loader and a 256x256 generator with CFG, autoguide and batch support."
+authors = [{ name = "LogoLabs" }]
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.9"
+# torch, numpy and Pillow come with ComfyUI and are deliberately not listed.
+dependencies = [
+    "diffusers>=0.30",
+    "transformers>=4.48",
+    "safetensors",
+    "huggingface_hub",
+]
+classifiers = [
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Topic :: Multimedia :: Graphics",
+]
+
+[project.urls]
+Repository = "https://github.com/logolabs/comfyui-agate"
+Documentation = "https://github.com/logolabs/comfyui-agate#readme"
+"Bug Tracker" = "https://github.com/logolabs/comfyui-agate/issues"
+"Model card" = "https://huggingface.co/Logolabs/agate-preview-001"
+
+[tool.comfy]
+# Same Comfy Registry publisher as logolabs/inkvec-comfyui.
+PublisherId = "logolabs-org"
+DisplayName = "Agate"

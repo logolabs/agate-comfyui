@@ -1,0 +1,18 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Model weights are downloaded from Hugging Face by the loader; never commit them.
+*.safetensors
+*.bin
+*.ckpt
+*.pt
+models/
+
+# Scratch output from running the nodes or tests outside ComfyUI.
+output/
+temp/
+tests/_out/

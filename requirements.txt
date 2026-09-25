@@ -1,0 +1,7 @@
+# torch, numpy, Pillow, safetensors and huggingface_hub come with ComfyUI. Agate also needs
+# diffusers (the SD-VAE / TAESD decoders) and a transformers new enough for ModernBERT
+# (the Ettin text encoder); older ComfyUI installs ship transformers < 4.48.
+diffusers>=0.30
+transformers>=4.48
+safetensors
+huggingface_hub

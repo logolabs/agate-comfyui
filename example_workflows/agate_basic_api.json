@@ -1,0 +1,47 @@
+{
+  "1": {
+    "class_type": "AgateLoader",
+    "_meta": {
+      "title": "Agate Loader"
+    },
+    "inputs": {
+      "source": "Logolabs/agate-preview-001",
+      "decoder": "sd-vae",
+      "device": "auto",
+      "cuda_graphs": true,
+      "load_guide": false
+    }
+  },
+  "2": {
+    "class_type": "AgateGenerate",
+    "_meta": {
+      "title": "Agate Generate"
+    },
+    "inputs": {
+      "agate": [
+        "1",
+        0
+      ],
+      "prompt": "a minimalist logo of a fox head, orange, flat design, white background",
+      "negative_prompt": "",
+      "seed": 0,
+      "steps": 50,
+      "cfg": 3.0,
+      "autoguide": 0.0,
+      "batch_size": 1
+    }
+  },
+  "3": {
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "Save Image"
+    },
+    "inputs": {
+      "images": [
+        "2",
+        0
+      ],
+      "filename_prefix": "agate"
+    }
+  }
+}
