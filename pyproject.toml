@@ -1,7 +1,7 @@
 [project]
-name = "comfyui-agate"
-version = "0.1.0"
-description = "ComfyUI nodes for Agate, LogoLabs' 260M-parameter text-to-image model: a loader and a 256x256 generator with CFG, autoguide and batch support."
+name = "agate-comfyui"
+version = "0.2.0"
+description = "ComfyUI nodes for Agate, LogoLabs' 260M-parameter text-to-image model: a single-file loader, a sampler that outputs SD 1.x LATENTs (img2img, live previews) and an all-in-one 256x256 generator."
 authors = [{ name = "LogoLabs" }]
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -20,9 +20,9 @@ classifiers = [
 ]
 
 [project.urls]
-Repository = "https://github.com/logolabs/comfyui-agate"
-Documentation = "https://github.com/logolabs/comfyui-agate#readme"
-"Bug Tracker" = "https://github.com/logolabs/comfyui-agate/issues"
+Repository = "https://github.com/logolabs/agate-comfyui"
+Documentation = "https://github.com/logolabs/agate-comfyui#readme"
+"Bug Tracker" = "https://github.com/logolabs/agate-comfyui/issues"
 "Model card" = "https://huggingface.co/Logolabs/agate-preview-001"
 
 [tool.comfy]

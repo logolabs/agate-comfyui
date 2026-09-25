@@ -1,0 +1,263 @@
+{
+  "last_node_id": 6,
+  "last_link_id": 4,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "AgateLoader",
+      "pos": [
+        40,
+        80
+      ],
+      "size": [
+        340,
+        200
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "agate",
+          "type": "AGATE_MODEL",
+          "links": [
+            1
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "AgateLoader"
+      },
+      "widgets_values": [
+        "agate-preview-001.safetensors",
+        "sd-vae",
+        "auto",
+        true,
+        false,
+        ""
+      ]
+    },
+    {
+      "id": 2,
+      "type": "AgateSampler",
+      "pos": [
+        420,
+        80
+      ],
+      "size": [
+        400,
+        420
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "agate",
+          "type": "AGATE_MODEL",
+          "link": 1
+        },
+        {
+          "name": "latent_image",
+          "type": "LATENT",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "latent",
+          "type": "LATENT",
+          "links": [
+            2
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "AgateSampler"
+      },
+      "widgets_values": [
+        "a minimalist logo of a fox head, orange, flat design, white background",
+        "",
+        0,
+        "fixed",
+        50,
+        3.0,
+        0.0,
+        1,
+        1.0
+      ]
+    },
+    {
+      "id": 3,
+      "type": "VAELoader",
+      "pos": [
+        40,
+        360
+      ],
+      "size": [
+        340,
+        60
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "VAE",
+          "type": "VAE",
+          "links": [
+            3
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VAELoader"
+      },
+      "widgets_values": [
+        "vae-ft-mse-840000-ema-pruned.safetensors"
+      ]
+    },
+    {
+      "id": 4,
+      "type": "VAEDecode",
+      "pos": [
+        860,
+        80
+      ],
+      "size": [
+        200,
+        50
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "samples",
+          "type": "LATENT",
+          "link": 2
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 3
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            4
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VAEDecode"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 5,
+      "type": "SaveImage",
+      "pos": [
+        1100,
+        80
+      ],
+      "size": [
+        320,
+        360
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 4
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "Node name for S&R": "SaveImage"
+      },
+      "widgets_values": [
+        "agate"
+      ]
+    },
+    {
+      "id": 6,
+      "type": "Note",
+      "pos": [
+        40,
+        480
+      ],
+      "size": [
+        400,
+        150
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {},
+      "widgets_values": [
+        "Decode with any SD 1.5 VAE. Agate was trained on SD-VAE ft-MSE latents: put vae-ft-mse-840000-ema-pruned.safetensors (huggingface.co/stabilityai/sd-vae-ft-mse-original) in ComfyUI/models/vae/. The Agate checkpoint itself downloads into models/agate/ on first run."
+      ]
+    }
+  ],
+  "links": [
+    [
+      1,
+      1,
+      0,
+      2,
+      0,
+      "AGATE_MODEL"
+    ],
+    [
+      2,
+      2,
+      0,
+      4,
+      0,
+      "LATENT"
+    ],
+    [
+      3,
+      3,
+      0,
+      4,
+      1,
+      "VAE"
+    ],
+    [
+      4,
+      4,
+      0,
+      5,
+      0,
+      "IMAGE"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 1.0,
+      "offset": [
+        0,
+        0
+      ]
+    }
+  },
+  "version": 0.4
+}
