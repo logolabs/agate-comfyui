@@ -8,6 +8,10 @@ Every file is byte-identical to the release except `agate/pipeline.py`, whose
   * callback(step, steps)  -- called after every denoising step (progress bar, interrupt);
   * output_type="pt"       -- return a float (B, H, W, 3) tensor in [0, 1] instead of PIL images.
 With the defaults (callback=None, output_type="pil") it behaves exactly like the release.
+
+The ComfyUI nodes do not call AgatePipeline itself (the tests use it as the parity reference):
+  * runtime.py    -- the release sampler generalised to img2img, ComfyUI memory management, previews;
+  * checkpoint.py -- the single-file checkpoints in ComfyUI/models/agate/ (build and load).
 """
 
 SOURCE_REPO = "Logolabs/agate-preview-001"

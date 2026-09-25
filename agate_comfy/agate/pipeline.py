@@ -133,7 +133,7 @@ class AgatePipeline:
         """autoguide > 0 also steers away from the guide model (Agate's own step-27,600 checkpoint):
         v = v_uncond + cfg (v_cond - v_uncond) + autoguide (v_cond - v_guide). Try 1.0 with cfg 4.
 
-        comfyui-agate additions (not in the release package): `callback(step, steps)` is called
+        agate-comfyui additions (not in the release package): `callback(step, steps)` is called
         after every denoising step, and output_type="pt" returns a float tensor (B, H, W, 3) in
         [0, 1] on the CPU instead of a list of PIL images."""
         n, dev = int(num_images), self.device

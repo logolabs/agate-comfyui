@@ -1,0 +1,48 @@
+{
+  "1": {
+    "class_type": "AgateLoader",
+    "_meta": {
+      "title": "Agate Loader"
+    },
+    "inputs": {
+      "checkpoint": "agate-preview-001.safetensors",
+      "decoder": "sd-vae",
+      "device": "auto",
+      "cuda_graphs": true,
+      "load_guide": false,
+      "model_folder": ""
+    }
+  },
+  "2": {
+    "class_type": "AgateGenerate",
+    "_meta": {
+      "title": "Agate Generate"
+    },
+    "inputs": {
+      "prompt": "a minimalist logo of a fox head, orange, flat design, white background",
+      "negative_prompt": "",
+      "seed": 0,
+      "steps": 50,
+      "cfg": 3.0,
+      "autoguide": 0.0,
+      "batch_size": 1,
+      "agate": [
+        "1",
+        0
+      ]
+    }
+  },
+  "3": {
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "Save Image"
+    },
+    "inputs": {
+      "filename_prefix": "agate",
+      "images": [
+        "2",
+        0
+      ]
+    }
+  }
+}
