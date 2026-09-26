@@ -191,20 +191,23 @@ def _find_in_model_folder(name: str) -> Path | None:
     return None
 
 
-def _count_download() -> None:
-    """HEAD the model repo's root config.json. The Hub counts a model download only on a request for that file,
-    so a checkpoint fetched from comfyui/ alone is invisible in the repo's download count. Best effort."""
-    try:
-        from huggingface_hub import get_hf_file_metadata, hf_hub_url
-        get_hf_file_metadata(hf_hub_url(HF_REPO, "config.json"), timeout=5)
-    except Exception:
-        pass
+def _count_load() -> None:
+    """Read the model repo's root config.json in the background. The Hub counts a model download only on a
+    request for that file, so this makes every load of an official checkpoint count once, as a Python
+    from_pretrained() does. Best effort: offline or blocked just skips it."""
+    def ping():
+        try:
+            from huggingface_hub import get_session, hf_hub_url
+            get_session().get(hf_hub_url(HF_REPO, "config.json"), timeout=5)
+        except Exception:
+            pass
+    import threading
+    threading.Thread(target=ping, name="agate-count", daemon=True).start()
 
 
 def _download(name: str, dest_dir: Path | None) -> Path:
     """Fetch comfyui/<name> from the Hugging Face model repo into models/agate/."""
     from huggingface_hub import hf_hub_download
-    _count_download()
     if dest_dir is None:                                     # outside ComfyUI: the HF cache
         return Path(hf_hub_download(HF_REPO, f"{HF_SUBFOLDER}/{name}"))
     log.info("Agate: downloading %s/%s/%s into %s", HF_REPO, HF_SUBFOLDER, name, dest_dir)
@@ -226,6 +229,8 @@ def resolve_checkpoint(name: str) -> Path:
     """A file name from the dropdown (or an absolute path) -> a local file, downloading the
     official checkpoints from Hugging Face when they are missing."""
     p = Path(name)
+    if p.name == MAIN_NAME or p.name.startswith("agate-guide-"):
+        _count_load()
     if p.is_absolute() and p.is_file():
         return p
     found = _find_in_model_folder(name)
