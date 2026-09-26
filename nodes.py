@@ -83,12 +83,13 @@ def _progress(steps: int, device: torch.device, previews: bool = True, preview_m
         except Exception as e:
             log.debug("Agate: no latent previewer (%s)", e)
 
+    basis = {"vt": None, "lo": None, "hi": None}
+
     def callback(step, total, x1, plan=None):
         preview = None
         if previewer is not None or (plan is not None and preview_mode in ("plan", "side_by_side")):
             try:
                 from PIL import Image
-                from .agate_comfy import plan as pv
                 img_im = None
                 if previewer is not None and preview_mode in ("image", "side_by_side"):
                     ret = previewer.decode_latent_to_preview_image("JPEG", x1)
@@ -99,9 +100,25 @@ def _progress(steps: int, device: torch.device, previews: bool = True, preview_m
 
                 plan_im = None
                 if plan is not None and preview_mode in ("plan", "side_by_side"):
-                    p_rgb = pv.pca_rgb(plan[:1].float())[0]
+                    P = plan[:1].float()
+                    X = P.permute(0, 2, 3, 1).reshape(-1, 640).double()
+                    X = X - X.mean(0, keepdim=True)
+                    if basis["vt"] is None:
+                        _, vecs = torch.linalg.eigh(X.T @ X)
+                        vt = vecs.flip(1)[:, :3].T
+                        pivot = vt.gather(1, vt.abs().argmax(1, keepdim=True))
+                        vt = vt * torch.where(pivot < 0, -1.0, 1.0).to(vt)
+                        basis["vt"] = vt
+                        Y = (X @ vt.T).float()
+                        basis["lo"] = torch.quantile(Y, 0.02, dim=0)
+                        basis["hi"] = torch.quantile(Y, 0.98, dim=0)
+                    else:
+                        vt = basis["vt"]
+                        Y = (X @ vt.T).float()
+                    lo, hi = basis["lo"], basis["hi"]
+                    rgb = (((Y - lo) / (hi - lo + 1e-8)).clamp(0, 1) * 255).round().to(torch.uint8).reshape(16, 16, 3).cpu().numpy()
                     target_sz = img_im.size if img_im is not None else (256, 256)
-                    plan_im = Image.fromarray(p_rgb).resize(target_sz, Image.NEAREST)
+                    plan_im = Image.fromarray(rgb).resize(target_sz, Image.NEAREST)
 
                 if preview_mode == "side_by_side":
                     if img_im is not None and plan_im is not None:
