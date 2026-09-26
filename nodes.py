@@ -191,9 +191,20 @@ def _find_in_model_folder(name: str) -> Path | None:
     return None
 
 
+def _count_download() -> None:
+    """HEAD the model repo's root config.json. The Hub counts a model download only on a request for that file,
+    so a checkpoint fetched from comfyui/ alone is invisible in the repo's download count. Best effort."""
+    try:
+        from huggingface_hub import get_hf_file_metadata, hf_hub_url
+        get_hf_file_metadata(hf_hub_url(HF_REPO, "config.json"), timeout=5)
+    except Exception:
+        pass
+
+
 def _download(name: str, dest_dir: Path | None) -> Path:
     """Fetch comfyui/<name> from the Hugging Face model repo into models/agate/."""
     from huggingface_hub import hf_hub_download
+    _count_download()
     if dest_dir is None:                                     # outside ComfyUI: the HF cache
         return Path(hf_hub_download(HF_REPO, f"{HF_SUBFOLDER}/{name}"))
     log.info("Agate: downloading %s/%s/%s into %s", HF_REPO, HF_SUBFOLDER, name, dest_dir)
