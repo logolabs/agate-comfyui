@@ -15,7 +15,9 @@ Build the files from the release folder (the Hugging Face repo layout) with
 
     python -m agate_comfy.checkpoint /path/to/agate-preview-001 out_dir/
 
-which writes out_dir/agate-preview-001.safetensors and out_dir/agate-guide-27600.safetensors.
+which writes out_dir/agate-preview-001.safetensors and out_dir/agate-guide-27600.safetensors. The same
+command builds agate-preview-002.safetensors (same architecture; its guide is 001's) and
+agate-preview-003.safetensors (arch fcdm_t2mr, 512 px; no guide). The release name is the folder name.
 """
 from __future__ import annotations
 
@@ -27,8 +29,16 @@ import torch
 
 FORMAT = "agate-comfyui/1"
 TOKENIZER_FILES = ("tokenizer.json", "tokenizer_config.json", "special_tokens_map.json")
-MAIN_NAME = "agate-preview-001.safetensors"
+MAIN_NAME = "agate-preview-001.safetensors"          # the first release; old workflows name it
 STORAGE_DTYPE = torch.bfloat16
+# The official single files: file name -> the Hugging Face model repo that hosts it under comfyui/.
+OFFICIAL = {
+    "agate-preview-003.safetensors": "Logolabs/agate-preview-003",
+    "agate-preview-002.safetensors": "Logolabs/agate-preview-002",
+    MAIN_NAME: "Logolabs/agate-preview-001",
+}
+GUIDE_REPO = "Logolabs/agate-preview-001"                 # agate-guide-27600 (used by 001 and 002)
+DEFAULT_NAME = "agate-preview-003.safetensors"
 
 
 def guide_file_name(step: int) -> str:
@@ -41,6 +51,8 @@ def _state(path: Path) -> dict:
 
 
 def _pack(generator_sd: dict, text_dir: Path, config: dict, title: str) -> tuple[dict, dict]:
+    mr = config.get("arch") == "fcdm_t2mr"
+    res = int(config.get("resolution", 256))
     tensors = {}
     for prefix, sd in (("generator.", generator_sd), ("text_encoder.", _state(text_dir / "model.safetensors"))):
         for k, v in sd.items():
@@ -50,12 +62,12 @@ def _pack(generator_sd: dict, text_dir: Path, config: dict, title: str) -> tuple
         "agate.config": json.dumps(config, separators=(",", ":")),
         "agate.text_encoder.config": (text_dir / "config.json").read_text(encoding="utf-8"),
         "modelspec.sai_model_spec": "1.0.0",
-        "modelspec.architecture": "agate/fcdm-thinker2",
+        "modelspec.architecture": "agate/fcdm-thinker2-mr" if mr else "agate/fcdm-thinker2",
         "modelspec.implementation": "https://github.com/logolabs/agate-comfyui",
         "modelspec.title": title,
         "modelspec.author": "LogoLabs",
         "modelspec.license": "MIT",
-        "modelspec.resolution": "256x256",
+        "modelspec.resolution": f"{res}x{res}",
     }
     for f in TOKENIZER_FILES:
         meta[f"agate.tokenizer.{f}"] = (text_dir / f).read_text(encoding="utf-8")
@@ -69,17 +81,20 @@ def convert_release(release: str | Path, out_dir: str | Path) -> list[Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     cfg = json.loads((release / "config.json").read_text(encoding="utf-8"))
     g = cfg.get("guide")
-    base = {k: cfg[k] for k in ("model_type", "arch", "model_kw", "params_generator", "text_max_len", "vae",
-                                "vae_scale", "fast_vae", "resolution", "latent_hw", "sampler", "training")
+    base = {k: cfg[k] for k in ("model_type", "arch", "model_kw", "params_generator", "params_generator_active",
+                                "text_max_len", "vae", "vae_scale", "fast_vae", "resolution", "latent_hw",
+                                "resolutions", "prompt_pipeline", "sampler", "training")
             if k in cfg}
-    base["release"] = "agate-preview-001"
+    name = release.name if release.name.startswith("agate-preview-") else "agate-preview-001"
+    num = name.rsplit("-", 1)[-1]
+    base["release"] = name
     if g:
         base["guide"] = {"file": guide_file_name(g["step"]), "step": g["step"], "text_max_len": g["text_max_len"]}
     written = []
     tensors, meta = _pack(_state(release / "generator.safetensors"), release / cfg["text_encoder"], base,
-                          "Agate preview 001")
-    save_file(tensors, str(out_dir / MAIN_NAME), metadata=meta)
-    written.append(out_dir / MAIN_NAME)
+                          f"Agate preview {num}")
+    save_file(tensors, str(out_dir / f"{name}.safetensors"), metadata=meta)
+    written.append(out_dir / f"{name}.safetensors")
     if g:
         gcfg = dict(base, role="guide", text_max_len=g["text_max_len"], training={"step": g["step"]})
         gcfg.pop("guide")
@@ -138,7 +153,7 @@ def _build_text_model(meta: dict, state: dict):
 if __name__ == "__main__":
     import argparse
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("release", help="the unpacked Logolabs/agate-preview-001 folder")
+    ap.add_argument("release", help="the unpacked Logolabs/agate-preview-00X folder (named agate-preview-00X)")
     ap.add_argument("out_dir")
     a = ap.parse_args()
     for p in convert_release(a.release, a.out_dir):

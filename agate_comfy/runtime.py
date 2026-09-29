@@ -27,6 +27,9 @@ import torch
 from .agate.fcdm_thinker2 import FCDMThinker2
 from .agate.pipeline import _Eager, _Graphed, _bucket, _pad_to
 from .agate.text_encoder import EttinTextEncoder
+from .agate003 import prompt_norm as PN
+from .agate003.fcdm_thinker2_mr import FCDMThinker2MR
+from .agate003.pipeline import _Eager as _EagerMR, _Graphed as _GraphedMR, shift_t
 
 log = logging.getLogger("agate-comfyui")
 
@@ -69,56 +72,65 @@ def _grab_thinker(model: torch.nn.Module, box: list):
     return thinker.register_forward_hook(lambda mod, inp, out: box.append(out))
 
 
-class _PlanEager(_Eager):
-    """_Eager that also exposes the thinker output of its last call as `.plan`."""
+def _plan_classes(eager_base, graphed_base):
+    """The plan-capturing step wrappers over a release package's _Eager / _Graphed (001/002 or 003)."""
 
-    plan = None
+    class _PlanEager(eager_base):
+        """_Eager that also exposes the thinker output of its last call as `.plan`. `*rest`: Preview 003's
+        count code (the multi-resolution model's step takes (z, t, ctx, mask, counts))."""
 
-    def __call__(self, z, t, ctx, mask):
-        box = []
-        h = _grab_thinker(self.model, box)
-        try:
-            out = super().__call__(z, t, ctx, mask)
-        finally:
-            if h is not None:
-                h.remove()
-        self.plan = box[0] if box else None
-        return out
+        plan = None
+
+        def __call__(self, z, t, ctx, mask, *rest):
+            box = []
+            h = _grab_thinker(self.model, box)
+            try:
+                out = super().__call__(z, t, ctx, mask, *rest)
+            finally:
+                if h is not None:
+                    h.remove()
+            self.plan = box[0] if box else None
+            return out
+
+    class _PlanGraphed(graphed_base):
+        """_Graphed that also exposes the thinker output as `.plan`. A hook does not fire when a graph
+        is replayed, but the tensor it saw while the graph was recorded lives in the graph's memory
+        pool and every replay rewrites it (like the graph's output), so keeping a reference to it is
+        enough. The recorded kernels are the same as without it, so sampling is unchanged."""
+
+        plan = None
+
+        def __init__(self, model):
+            super().__init__(model)
+            self._plans, self._last = {}, None
+
+        def _run(self, *a):
+            box = []
+            h = _grab_thinker(self.model, box)
+            try:
+                out = super()._run(*a)
+            finally:
+                if h is not None:
+                    h.remove()
+            if box and torch.cuda.is_current_stream_capturing():
+                self._last = box[0]                   # the recording run: keep the graph's own tensor
+            return out
+
+        def __call__(self, z, t, ctx, mask, *rest):
+            key = (tuple(z.shape), tuple(ctx.shape))
+            recorded = key in self.cache
+            out = super().__call__(z, t, ctx, mask, *rest)
+            if not recorded:
+                self._plans[key] = self._last
+                self._last = None
+            self.plan = self._plans.get(key)
+            return out
+
+    return _PlanEager, _PlanGraphed
 
 
-class _PlanGraphed(_Graphed):
-    """_Graphed that also exposes the thinker output as `.plan`. A hook does not fire when a graph
-    is replayed, but the tensor it saw while the graph was recorded lives in the graph's memory
-    pool and every replay rewrites it (like the graph's output), so keeping a reference to it is
-    enough. The recorded kernels are the same as without it, so sampling is unchanged."""
-
-    plan = None
-
-    def __init__(self, model):
-        super().__init__(model)
-        self._plans, self._last = {}, None
-
-    def _run(self, *a):
-        box = []
-        h = _grab_thinker(self.model, box)
-        try:
-            out = super()._run(*a)
-        finally:
-            if h is not None:
-                h.remove()
-        if box and torch.cuda.is_current_stream_capturing():
-            self._last = box[0]                   # the recording run: keep the graph's own tensor
-        return out
-
-    def __call__(self, z, t, ctx, mask):
-        key = (tuple(z.shape), tuple(ctx.shape))
-        recorded = key in self.cache
-        out = super().__call__(z, t, ctx, mask)
-        if not recorded:
-            self._plans[key] = self._last
-            self._last = None
-        self.plan = self._plans.get(key)
-        return out
+_PlanEager, _PlanGraphed = _plan_classes(_Eager, _Graphed)
+_PlanEagerMR, _PlanGraphedMR = _plan_classes(_EagerMR, _GraphedMR)   # Preview 003 (counts input)
 
 
 class _StepFn:
@@ -126,8 +138,8 @@ class _StepFn:
     re-recorded whenever the weights have moved since the graphs were captured. After each call
     `.plan` is the thinker's output for that call (valid until the next call)."""
 
-    def __init__(self, module: torch.nn.Module, graphs: bool):
-        self.module, self.graphs = module, graphs
+    def __init__(self, module: torch.nn.Module, graphs: bool, mr: bool = False):
+        self.module, self.graphs, self.mr = module, graphs, mr
         self._impl, self._sig = None, None
 
     def reset(self):
@@ -137,14 +149,19 @@ class _StepFn:
         sig = tuple(p.data_ptr() for p in self.module.parameters())
         if self._impl is None or sig != self._sig:
             use_graphs = self.graphs and device.type == "cuda"
-            self._impl = _PlanGraphed(self.module) if use_graphs else _PlanEager(self.module)
+            if self.mr:
+                self._impl = _PlanGraphedMR(self.module) if use_graphs else _PlanEagerMR(self.module)
+            else:
+                self._impl = _PlanGraphed(self.module) if use_graphs else _PlanEager(self.module)
             self._sig = sig
 
     @property
     def plan(self):
         return None if self._impl is None else self._impl.plan
 
-    def __call__(self, z, t, ctx, mask):
+    def __call__(self, z, t, ctx, mask, counts=None):
+        if self.mr:
+            return self._impl(z, t, ctx, mask, torch.zeros_like(mask, dtype=torch.float32) if counts is None else counts)
         return self._impl(z, t, ctx, mask)
 
 
@@ -221,7 +238,21 @@ class AgateRuntime:
         self.cuda_graphs = bool(cuda_graphs) and self.on_cuda
         self.dtype = torch.bfloat16 if self.on_cuda else torch.float32
         self.vae_scale = float(cfg.get("vae_scale", VAE_SCALE))
-        self.latent_hw = int(cfg.get("latent_hw", 32))
+        # Preview 003 (arch fcdm_t2mr): 512 px native, 256 px too, SD3 timestep shift per resolution, prompt
+        # pipeline + count code. 001 / 002 (fcdm_t2): 256 px, no shift, prompts as typed.
+        self.mr = cfg.get("arch") == "fcdm_t2mr"
+        if self.mr:
+            self.resolutions = {int(k): {"latent_hw": int(v["latent_hw"]), "shift": float(v["shift"])}
+                                for k, v in cfg["resolutions"].items()}
+        else:
+            hw = int(cfg.get("latent_hw", 32))
+            self.resolutions = {hw * 8: {"latent_hw": hw, "shift": 1.0}}
+        self.native_res = int(cfg.get("resolution", 256))
+        self.latent_hw = self.resolutions[self.native_res]["latent_hw"]
+        self.prompt_pipeline = cfg.get("prompt_pipeline") if self.mr else None
+        from .marking import release_id
+        self.release_tag = release_id(cfg, name)          # "001" / "002" / "003": the watermark payload
+        self.last_prepared = None
         if self.on_cuda:
             torch.backends.cudnn.benchmark = True
             torch.backends.cuda.enable_cudnn_sdp(False)   # the attention kernels Agate was trained with
@@ -233,7 +264,7 @@ class AgateRuntime:
 
     # -- construction ---------------------------------------------------------------------------
     def _build(self, gen_sd: dict, text: tuple, max_len: int, name: str):
-        m = FCDMThinker2(**self.cfg["model_kw"])
+        m = (FCDMThinker2MR if self.mr else FCDMThinker2)(**self.cfg["model_kw"])
         m.load_state_dict(gen_sd)
         m = m.to(dtype=self.dtype).eval().requires_grad_(False)
         if self.on_cuda:
@@ -245,7 +276,7 @@ class AgateRuntime:
         else:                    # ("built", tokenizer, module) from a single file
             enc = _Text(payload[0], payload[1], self.device, max_len)
         enc.model.to(dtype=self.dtype).requires_grad_(False)
-        step = _StepFn(m, self.cuda_graphs)
+        step = _StepFn(m, self.cuda_graphs, self.mr)
         group = _Managed(f"{self.name}:{name}", AgateWeights(self.dtype, step.reset, generator=m, text_encoder=enc.model),
                          self.device)
         return group, step, enc
@@ -308,42 +339,82 @@ class AgateRuntime:
     def _activation_bytes(self, n: int) -> int:
         return int(n * 2 * 160 * 2 ** 20)     # measured ~0.1 GB per CFG pair at 256 px, with margin
 
+    def prepare(self, prompt: str, negative_prompt: str = "", normalize: bool = True, spell: bool = True):
+        """The prompt as the model sees it. Preview 003: its prompt pipeline, exactly AgatePipeline.prepare
+        (normaliser, "no X" -> negative, quoted text spelled out); 001 / 002: unchanged."""
+        if not self.mr:
+            return prompt, negative_prompt
+        negs = []
+        if normalize:
+            prompt, negs = PN.split_negatives(PN.normalize(prompt))
+        if spell:
+            prompt = PN.add_spelling(prompt)
+        return prompt, ", ".join(x for x in [negative_prompt.strip(), *negs] if x)
+
+    def sizes_text(self) -> str:
+        return ", ".join(f"{r} px" for r in sorted(self.resolutions))
+
+    def _shift_for(self, hw: int) -> float:
+        for v in self.resolutions.values():
+            if v["latent_hw"] == hw:
+                return v["shift"]
+        raise ValueError(f"{self.name} samples at {self.sizes_text()} only (a {hw}x{hw} latent = {hw * 8} px "
+                         "was asked for)")
+
     @torch.no_grad()
     def sample(self, prompt: str, negative_prompt: str = "", seed: int = 0, steps: int = 50, cfg: float = 3.0,
                batch_size: int = 1, autoguide: float = 0.0, init_latent: torch.Tensor | None = None,
-               denoise: float = 1.0, callback=None, interrupt=None, on_step=None) -> torch.Tensor:
+               denoise: float = 1.0, callback=None, interrupt=None, on_step=None, resolution: int | None = None,
+               normalize: bool = True, spell: bool = True) -> torch.Tensor:
         """-> z, (B, 4, h, w) float32 on the device, in the model's (scaled SD-VAE) latent space.
 
         init_latent: scaled latents (B, 4, h, w) to start from, or None. Their batch size wins over
         batch_size, and their h, w set the size (Agate was trained at 32 x 32 only).
         callback(step, steps, x1_estimate) runs after every step; interrupt() may raise.
         on_step(i, t, x1_estimate, plan) also runs after every step, with plan the thinker output for
-        the [conditional; unconditional] batch, (2B, C, gh, gw): a buffer the next step overwrites."""
+        the [conditional; unconditional] batch, (2B, C, gh, gw): a buffer the next step overwrites.
+        resolution: Preview 003 only, 512 (default) or 256; normalize / spell: 003's prompt pipeline (as
+        AgatePipeline; off is not how the model was trained)."""
         denoise = float(min(max(denoise, 0.0), 1.0))
         if init_latent is not None:
             n, _, h, w = init_latent.shape
         else:
-            n, h, w = int(batch_size), self.latent_hw, self.latent_hw
+            r = int(resolution) if resolution else self.native_res
+            if r not in self.resolutions:
+                raise ValueError(f"{self.name} samples at {self.sizes_text()}, not {r} px")
+            n, h, w = int(batch_size), self.resolutions[r]["latent_hw"], self.resolutions[r]["latent_hw"]
             if denoise < 1.0:
                 raise ValueError("denoise < 1 needs a latent_image to start from (img2img); "
                                  "connect one or set denoise to 1.0")
         if h % 4 or w % 4:
             raise ValueError(f"Agate needs latent sizes divisible by 4 (images divisible by 32), got {h}x{w}")
+        shift = self._shift_for(h) if self.mr else 1.0
+        if self.mr and h != w:
+            raise ValueError("Preview 003 samples square images only (aspect ratios are not supported yet)")
         if autoguide:
             self.ensure_guide()
         groups = [self.core] + ([self.guide] if autoguide else [])
-        load_to_device(groups, self._activation_bytes(n))
+        load_to_device(groups, self._activation_bytes(n) * max(1, (h * w) // (32 * 32)))
         dev = self.device
         self.step_fn.prepare(dev)
         if autoguide:
             self.guide_step.prepare(dev)
 
-        ctx, mask = self.text([prompt] * n)
-        u_ctx, u_mask = self.text([negative_prompt] * n)
+        text, negative = self.prepare(prompt, negative_prompt, normalize, spell)
+        self.last_prepared = (text, negative)
+        ids, am = self.text.tokenize([text] * n)
+        ctx, mask = self.text.encode(ids, am)
+        u_ctx, u_mask = self.text([negative] * n)
         L = _bucket(ctx.shape[1], u_ctx.shape[1])
         ctx, mask = _pad_to(ctx, mask, L)
         u_ctx, u_mask = _pad_to(u_ctx, u_mask, L)
         both_ctx, both_mask = torch.cat([ctx, u_ctx]), torch.cat([mask, u_mask])
+        both_counts = None
+        if self.mr:                                     # the count code, conditional half only
+            use = normalize and (self.prompt_pipeline or {}).get("count_code", True)
+            counts = PN.count_tensor(self.text, [text] * n, ids.shape[1]) if use else torch.zeros(n, ids.shape[1])
+            counts = torch.nn.functional.pad(counts.to(self.device).float(), (0, L - counts.shape[1]))
+            both_counts = torch.cat([counts, torch.zeros_like(counts)])
         if autoguide:
             g_ctx, g_mask = self.guide_text([prompt] * n)
             g_ctx, g_mask = _pad_to(g_ctx, g_mask, _bucket(g_ctx.shape[1]))
@@ -353,23 +424,29 @@ class AgateRuntime:
         t0 = 0.0
         if init_latent is not None and denoise < 1.0:
             t0 = 1.0 - denoise
-            z = (1.0 - t0) * z + t0 * init_latent.to(dev, torch.float32)
+            ts = shift_t(t0, shift) if self.mr else t0      # the start on the (shifted) time grid
+            z = (1.0 - ts) * z + ts * init_latent.to(dev, torch.float32)
         if steps < 1 or denoise == 0.0:
             return z if init_latent is None else init_latent.to(dev, torch.float32)
         dt = (1.0 - t0) / steps
+        # 001/002: t_i = t0 + i dt, step dt (the 001 release sampler, unchanged). 003: the release's shifted grid,
+        # t_i = shift_t(t0 + i dt, shift), step t_{i+1} - t_i (shift 1 at 256 px: the plain grid).
+        grid = [shift_t(t0 + i * dt, shift) for i in range(steps + 1)] if self.mr else None
         for i in range(steps):
             if interrupt is not None:
                 interrupt()
-            t = torch.full((n,), t0 + i * dt, device=dev)
-            vc, vu = self.step_fn(torch.cat([z, z]), torch.cat([t, t]), both_ctx, both_mask).chunk(2)
+            tc = grid[i] if self.mr else t0 + i * dt
+            step = grid[i + 1] - grid[i] if self.mr else dt
+            t = torch.full((n,), tc, device=dev)
+            vc, vu = self.step_fn(torch.cat([z, z]), torch.cat([t, t]), both_ctx, both_mask, both_counts).chunk(2)
             v = vu + cfg * (vc - vu)
             if autoguide:
                 v = v + autoguide * (vc - self.guide_step(z, t, g_ctx, g_mask))
             if callback is not None or on_step is not None:
-                x1 = z + (1.0 - (t0 + i * dt)) * v
+                x1 = z + (1.0 - tc) * v
             if on_step is not None:
-                on_step(i, t0 + i * dt, x1, self.step_fn.plan)
-            z = z + dt * v
+                on_step(i, tc, x1, self.step_fn.plan)
+            z = z + step * v
             if callback is not None:
                 try:
                     callback(i + 1, steps, x1, self.step_fn.plan)

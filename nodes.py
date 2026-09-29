@@ -1,12 +1,15 @@
 """ComfyUI nodes for Agate, LogoLabs' 260M text-to-image model.
 
-Agate Loader   -> AGATE_MODEL  (single-file checkpoint from models/agate/, or a release folder / repo id)
+Agate Loader   -> AGATE_MODEL  (Preview 001 / 002 / 003 single files from models/agate/, or a release folder / repo id)
 Agate Sampler  -> LATENT       (SD 1.x latent: decode with the stock VAE Decode; optional img2img input)
-Agate Generate -> IMAGE        (all in one: sample + Agate's own SD-VAE / TAESD decode)
+Agate Generate -> IMAGE        (all in one: sample + Agate's own SD-VAE / TAESD decode; AI-output marking)
 Agate Plan Viewer -> IMAGEs    (the thinker's 16 x 16 plan at every step, as frames; agate_comfy/plan.py)
+Agate Watermark   -> IMAGE     (adds the Agate AI-output watermark, e.g. after Agate Sampler + VAE Decode)
+Agate Save Image               (PNG with the provenance text chunks the Python packages write)
 
-The model code is the vendored release package (agate_comfy/agate, MIT); agate_comfy/runtime.py
-holds the ComfyUI side: memory management, img2img, previews.
+The model code is the vendored release packages (agate_comfy/agate for 001/002, agate_comfy/agate003 for
+003, MIT); agate_comfy/runtime.py holds the ComfyUI side: memory management, img2img, previews;
+agate_comfy/marking.py the AI-output marking (EU AI Act Art. 50(2)).
 """
 from __future__ import annotations
 
@@ -17,13 +20,13 @@ from pathlib import Path
 
 import torch
 
-from .agate_comfy import SOURCE_REPO
+from .agate_comfy import marking as mk
 from .agate_comfy import runtime as rt
-from .agate_comfy.checkpoint import MAIN_NAME
+from .agate_comfy.checkpoint import DEFAULT_NAME, GUIDE_REPO, MAIN_NAME, OFFICIAL
 
 log = logging.getLogger("agate-comfyui")
 
-HF_REPO = SOURCE_REPO
+HF_REPO = OFFICIAL[MAIN_NAME]            # 001's repo (also hosts the guide model)
 HF_SUBFOLDER = "comfyui"
 MODEL_FOLDER = "agate"                  # ComfyUI/models/agate/
 DECODERS = ("sd-vae", "taesd")
@@ -176,7 +179,7 @@ def checkpoint_choices() -> list[str]:
                      if n.endswith(".safetensors") and "agate-guide-" not in Path(n).name]
         except Exception:
             names = []
-    return [MAIN_NAME] + sorted(n for n in names if n != MAIN_NAME)
+    return list(OFFICIAL) + sorted(n for n in names if n not in OFFICIAL)
 
 
 def _find_in_model_folder(name: str) -> Path | None:
@@ -191,33 +194,44 @@ def _find_in_model_folder(name: str) -> Path | None:
     return None
 
 
-def _count_load() -> None:
+def _repo_for(name: str) -> str:
+    """The Hugging Face model repo of an official single file (the guide lives in 001's repo)."""
+    return OFFICIAL.get(name, GUIDE_REPO)
+
+
+def _count_load(repo: str = HF_REPO) -> None:
     """Read the model repo's root config.json in the background. The Hub counts a model download only on a
     request for that file, so this makes every load of an official checkpoint count once, as a Python
-    from_pretrained() does. Best effort: offline or blocked just skips it."""
+    from_pretrained() does -- on the repo of the release that is loaded. Best effort: offline or blocked just
+    skips it."""
     def ping():
         try:
             from huggingface_hub import get_session, hf_hub_url
-            get_session().get(hf_hub_url(HF_REPO, "config.json"), timeout=5)
+            get_session().get(hf_hub_url(repo, "config.json"), timeout=5)
         except Exception:
             pass
     import threading
     threading.Thread(target=ping, name="agate-count", daemon=True).start()
 
 
+def _is_official(name: str) -> bool:
+    return name in OFFICIAL or name.startswith("agate-guide-")
+
+
 def _download(name: str, dest_dir: Path | None) -> Path:
-    """Fetch comfyui/<name> from the Hugging Face model repo into models/agate/."""
+    """Fetch comfyui/<name> from its Hugging Face model repo into models/agate/."""
     from huggingface_hub import hf_hub_download
+    repo = _repo_for(name)
     if dest_dir is None:                                     # outside ComfyUI: the HF cache
-        return Path(hf_hub_download(HF_REPO, f"{HF_SUBFOLDER}/{name}"))
-    log.info("Agate: downloading %s/%s/%s into %s", HF_REPO, HF_SUBFOLDER, name, dest_dir)
+        return Path(hf_hub_download(repo, f"{HF_SUBFOLDER}/{name}"))
+    log.info("Agate: downloading %s/%s/%s into %s", repo, HF_SUBFOLDER, name, dest_dir)
     staging = dest_dir / ".download"
     try:
-        got = Path(hf_hub_download(HF_REPO, f"{HF_SUBFOLDER}/{name}", local_dir=str(staging)))
+        got = Path(hf_hub_download(repo, f"{HF_SUBFOLDER}/{name}", local_dir=str(staging)))
     except Exception as e:
         raise RuntimeError(
-            f"Could not download {name} from https://huggingface.co/{HF_REPO} ({type(e).__name__}: {e}). "
-            f"Download it by hand from https://huggingface.co/{HF_REPO}/tree/main/{HF_SUBFOLDER} and put it "
+            f"Could not download {name} from https://huggingface.co/{repo} ({type(e).__name__}: {e}). "
+            f"Download it by hand from https://huggingface.co/{repo}/tree/main/{HF_SUBFOLDER} and put it "
             f"in {dest_dir}") from e
     target = dest_dir / name
     os.replace(got, target)
@@ -229,14 +243,14 @@ def resolve_checkpoint(name: str) -> Path:
     """A file name from the dropdown (or an absolute path) -> a local file, downloading the
     official checkpoints from Hugging Face when they are missing."""
     p = Path(name)
-    if p.name == MAIN_NAME or p.name.startswith("agate-guide-"):
-        _count_load()
+    if _is_official(p.name):
+        _count_load(_repo_for(p.name))
     if p.is_absolute() and p.is_file():
         return p
     found = _find_in_model_folder(name)
     if found is not None:
         return found
-    if p.name == MAIN_NAME or p.name.startswith("agate-guide-"):
+    if _is_official(p.name):
         return _download(p.name, _DEFAULT_DIR)
     raise FileNotFoundError(f"Agate checkpoint {name!r} not found in models/{MODEL_FOLDER}/")
 
@@ -323,7 +337,7 @@ def release_cached_model() -> None:
         _CACHE["model"].unload()
 
 
-def load_agate(checkpoint: str = MAIN_NAME, decoder: str = "sd-vae", device: str = "auto",
+def load_agate(checkpoint: str = DEFAULT_NAME, decoder: str = "sd-vae", device: str = "auto",
                cuda_graphs: bool = True, load_guide: bool = False, model_folder: str = "") -> AgateModel:
     dev = _default_device() if device == "auto" else torch.device(device)
     if dev.type == "cuda" and not torch.cuda.is_available():
@@ -359,6 +373,48 @@ def model_to_latent(z: torch.Tensor) -> torch.Tensor:
 # Nodes
 
 _PROMPT = "a minimalist logo of a fox head, orange, flat design, white background"
+RESOLUTIONS = ("auto", "512", "256")
+
+
+def _res(resolution) -> int | None:
+    return None if resolution in (None, "", "auto") else int(resolution)
+
+
+def _optional_res():
+    return (list(RESOLUTIONS), {"default": "auto",
+            "tooltip": "Preview 003: auto = 512 px (native); 256 px is ~4x faster. 001 / 002 are 256 px only."})
+
+
+def _live_preview():
+    return (["side_by_side", "image", "plan", "none"], {"default": "side_by_side",
+            "tooltip": "Live preview on this node during sampling: side_by_side shows "
+                       "both the developing image and the thinker's 16x16 plan."})
+
+
+def _optional_marking():
+    return {
+        "watermark": ("BOOLEAN", {"default": True,
+                      "tooltip": "Invisible AI-output watermark in every image (invisible-watermark dwtDctSvd, payload "
+                                 "AGATE + release; EU AI Act Art. 50). Read it with agate.detect_watermark()."}),
+        "metadata": ("BOOLEAN", {"default": True,
+                     "tooltip": "Add ai_generated / agate provenance entries to the workflow metadata, so the stock "
+                                "Save Image writes them into the PNG (Agate Save Image writes the exact keys)."}),
+    }
+
+
+def _mark(images, r, watermark: bool):
+    return mk.mark_image_tensor(images, r.release_tag) if watermark else images
+
+
+def _add_provenance(extra_pnginfo, r) -> None:
+    """ComfyUI's Save Image writes every entry of the prompt's extra_pnginfo (json-encoded) as a PNG text chunk.
+    `ai_generated` (json true -> the text "true", the packages' value) and an `agate` object with the other
+    provenance fields are added there. No prompt is added (the workflow chunk ComfyUI writes anyway holds it)."""
+    if not isinstance(extra_pnginfo, dict):
+        return
+    info = mk.provenance(r.release_tag)
+    extra_pnginfo["ai_generated"] = True
+    extra_pnginfo["agate"] = {k: v for k, v in info.items() if k != "ai_generated"}
 
 
 def _common_inputs():
@@ -384,15 +440,18 @@ class AgateLoader:
     RETURN_TYPES = ("AGATE_MODEL",)
     RETURN_NAMES = ("agate",)
     FUNCTION = "load"
-    DESCRIPTION = ("Loads Agate (LogoLabs, 260M text-to-image, 256x256) from models/agate/. The official "
-                   "checkpoint downloads from Hugging Face on first use. Cached: re-running reuses it.")
+    DESCRIPTION = ("Loads Agate (LogoLabs, 260M text-to-image) from models/agate/: Preview 003 (512 px, or 256; "
+                   "prompt pipeline built in), Preview 002 or Preview 001 (256 px). The official checkpoints "
+                   "download from Hugging Face on first use. Cached: re-running reuses it.")
 
     @classmethod
     def INPUT_TYPES(cls):
         return {"required": {
-            "checkpoint": (checkpoint_choices(), {"default": MAIN_NAME,
-                           "tooltip": f"Single-file checkpoints in models/{MODEL_FOLDER}/. {MAIN_NAME} is "
-                                      f"downloaded from huggingface.co/{HF_REPO} if it is missing."}),
+            "checkpoint": (checkpoint_choices(), {"default": DEFAULT_NAME,
+                           "tooltip": f"The Agate version: agate-preview-003 (newest, 512 px), -002 or -001 "
+                                      f"(256 px), or another single file in models/{MODEL_FOLDER}/. The official "
+                                      f"files are downloaded from huggingface.co/Logolabs/agate-preview-00X if "
+                                      f"they are missing."}),
             "decoder": (list(DECODERS), {"default": "sd-vae",
                         "tooltip": "Only used by Agate Generate. sd-vae: SD-VAE ft-MSE, best quality. "
                                    "taesd: tiny decoder, faster and lighter, slightly softer."}),
@@ -431,28 +490,29 @@ class AgateSampler:
         d["denoise"] = ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01,
                                   "tooltip": "1.0: ignore latent_image's content (txt2img). Lower keeps more "
                                              "of latent_image: sampling starts at t = 1 - denoise."})
-        d["live_preview"] = (["side_by_side", "image", "plan", "none"], {"default": "side_by_side",
-                                  "tooltip": "Live preview on this node during sampling: side_by_side shows "
-                                             "both the developing image and the thinker's 16x16 plan."})
-        return {"required": d, "optional": {"latent_image": ("LATENT",)}}
+        # optional (it used to be required): API-format workflows from before 0.3.1 lack it. Being the first
+        # optional widget, it keeps its place in saved UI workflows' widgets_values.
+        return {"required": d, "optional": {"live_preview": _live_preview(), "latent_image": ("LATENT",),
+                                            "resolution": _optional_res()}}
 
     def sample(self, agate, prompt, negative_prompt, seed, steps, cfg, autoguide, batch_size, denoise,
-               live_preview="side_by_side", latent_image=None):
+               live_preview="side_by_side", latent_image=None, resolution="auto"):
         r = agate.runtime
         init = None
         if latent_image is not None:
             s = latent_image["samples"]
             if s.ndim != 4 or s.shape[1] != 4:
                 raise ValueError(f"Agate needs an SD 1.x latent (B, 4, H, W); got {tuple(s.shape)}")
-            if tuple(s.shape[-2:]) != (r.latent_hw, r.latent_hw):
-                log.warning("Agate: latent_image is %dx%d px; Agate was trained at %d px only",
-                            s.shape[-1] * 8, s.shape[-2] * 8, r.latent_hw * 8)
+            if s.shape[-1] not in [v["latent_hw"] for v in r.resolutions.values()] or s.shape[-1] != s.shape[-2]:
+                log.warning("Agate: latent_image is %dx%d px; this Agate was trained at %s only",
+                            s.shape[-1] * 8, s.shape[-2] * 8, r.sizes_text())
             if denoise <= 0.0:                          # nothing to do: pass the latent through
                 return ({"samples": s.clone()},)
             init = latent_to_model(s)
         z = r.sample(prompt, negative_prompt, seed, steps, cfg, batch_size, autoguide, init_latent=init,
                      denoise=denoise, callback=_progress(steps, r.device, preview_mode=live_preview),
-                     interrupt=_check_interrupt)
+                     interrupt=_check_interrupt, resolution=_res(resolution))
+        _log_prepared(r, prompt)
         return ({"samples": model_to_latent(z).to(_intermediate_device())},)
 
 
@@ -461,24 +521,33 @@ class AgateGenerate:
     RETURN_TYPES = ("IMAGE",)
     RETURN_NAMES = ("images",)
     FUNCTION = "generate"
-    DESCRIPTION = ("All in one: samples Agate and decodes with the loader's decoder (SD-VAE or TAESD) to "
-                   "256x256 images. Pair with an upscale node for larger output.")
+    DESCRIPTION = ("All in one: samples Agate and decodes with the loader's decoder (SD-VAE or TAESD): 512x512 "
+                   "(or 256) with Preview 003, 256x256 with 001 / 002. Every image carries Agate's invisible "
+                   "AI-output watermark and the workflow metadata gets the provenance entries (both options, ON "
+                   "by default).")
 
     @classmethod
     def INPUT_TYPES(cls):
         d = _common_inputs()
-        d["live_preview"] = (["side_by_side", "image", "plan", "none"], {"default": "side_by_side",
-                                  "tooltip": "Live preview on this node during sampling: side_by_side shows "
-                                             "both the developing image and the thinker's 16x16 plan."})
-        return {"required": d}
+        return {"required": d, "optional": {"live_preview": _live_preview(), "resolution": _optional_res(),
+                                            **_optional_marking()},
+                "hidden": {"extra_pnginfo": "EXTRA_PNGINFO"}}
 
     def generate(self, agate, prompt, negative_prompt, seed, steps, cfg, autoguide, batch_size,
-                 live_preview="side_by_side"):
+                 live_preview="side_by_side", resolution="auto", watermark=True, metadata=True, extra_pnginfo=None):
         r = agate.runtime
         z = r.sample(prompt, negative_prompt, seed, steps, cfg, batch_size, autoguide,
                      callback=_progress(steps, r.device, preview_mode=live_preview),
-                     interrupt=_check_interrupt)
-        return (r.decode(z).contiguous(),)
+                     interrupt=_check_interrupt, resolution=_res(resolution))
+        _log_prepared(r, prompt)
+        if metadata:
+            _add_provenance(extra_pnginfo, r)
+        return (_mark(r.decode(z), r, watermark).contiguous(),)
+
+
+def _log_prepared(r, prompt: str) -> None:
+    if r.mr and r.last_prepared and (r.last_prepared[0] != prompt or r.last_prepared[1]):
+        log.info("Agate 003 prompt pipeline: %r -> %r (negative %r)", prompt, *r.last_prepared)
 
 
 def _to_image(a) -> torch.Tensor:
@@ -522,10 +591,12 @@ class AgatePlanViewer:
                                               "with nearest neighbour)"})
         d["denoise"] = ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01,
                                   "tooltip": "With latent_image: how much to change it (as in Agate Sampler)"})
-        return {"required": d, "optional": {"latent_image": ("LATENT",)}}
+        return {"required": d, "optional": {"latent_image": ("LATENT",), "resolution": _optional_res(),
+                                            **_optional_marking()},
+                "hidden": {"extra_pnginfo": "EXTRA_PNGINFO"}}
 
     def view(self, agate, prompt, negative_prompt, seed, steps, cfg, regions, frame_size, denoise=1.0,
-             latent_image=None):
+             latent_image=None, resolution="auto", watermark=True, metadata=True, extra_pnginfo=None):
         import numpy as np
         from .agate_comfy import plan as pv
         r = agate.runtime
@@ -556,8 +627,10 @@ class AgatePlanViewer:
 
         progress = _progress(steps, r.device)
         z = r.sample(prompt, negative_prompt, seed, steps, cfg, 1, 0.0, init_latent=init, denoise=denoise,
-                     callback=progress, interrupt=_check_interrupt, on_step=on_step)
-        image = r.decode(z).contiguous()
+                     callback=progress, interrupt=_check_interrupt, on_step=on_step, resolution=_res(resolution))
+        if metadata:
+            _add_provenance(extra_pnginfo, r)
+        image = _mark(r.decode(z), r, watermark).contiguous()   # the final image; the analysis frames are not marked
         pred = (r.decode_fast(torch.cat(preds)).clamp(0, 1) * 255).round().to(torch.uint8).numpy()
         A = pv.analyse(torch.cat(plans).float(), int(regions))       # (S, C, gh, gw), on the device
         F = int(frame_size)
@@ -569,6 +642,106 @@ class AgatePlanViewer:
         curve = pv.curve_image(A["curve"])[None]
         return (image, _to_image(plan_f), _to_image(reg_f), _to_image(pred_f), _to_image(chg_f),
                 _to_image(panel), _to_image(curve), {"samples": model_to_latent(z).to(_intermediate_device())})
+
+
+RELEASES = ("003", "002", "001")
+
+
+class AgateWatermark:
+    CATEGORY = "LogoLabs/Agate"
+    RETURN_TYPES = ("IMAGE",)
+    RETURN_NAMES = ("images",)
+    FUNCTION = "mark"
+    DESCRIPTION = ("Adds Agate's invisible AI-output watermark (invisible-watermark dwtDctSvd, payload AGATE + "
+                   "release, the same as the Python packages and the WebGPU Space) to images, e.g. after Agate "
+                   "Sampler + VAE Decode, which output a LATENT and cannot mark it. Connect the loader's agate "
+                   "output to take the release from the model. Images under 256 x 256 px are passed unchanged.")
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "images": ("IMAGE",),
+            "release": (list(RELEASES), {"default": "003",
+                        "tooltip": "The Agate release that made the images (ignored when agate is connected)"}),
+        }, "optional": {"agate": ("AGATE_MODEL",)}, "hidden": {"extra_pnginfo": "EXTRA_PNGINFO"}}
+
+    def mark(self, images, release, agate=None, extra_pnginfo=None):
+        rel = agate.runtime.release_tag if agate is not None else release
+        if isinstance(extra_pnginfo, dict):
+            extra_pnginfo["ai_generated"] = True
+            extra_pnginfo["agate"] = {k: v for k, v in mk.provenance(rel).items() if k != "ai_generated"}
+        return (mk.mark_image_tensor(images, rel).contiguous(),)
+
+
+class AgateSaveImage:
+    CATEGORY = "LogoLabs/Agate"
+    RETURN_TYPES = ()
+    FUNCTION = "save"
+    OUTPUT_NODE = True
+    DESCRIPTION = ("Saves PNGs with the provenance text chunks the Agate Python packages write (ai_generated, "
+                   "generator, model, watermark), plus ComfyUI's usual prompt/workflow chunks unless "
+                   "include_workflow is off. ComfyUI's stock Save Image cannot write these exact keys (it JSON-"
+                   "encodes its entries). release auto reads the watermark to find the release; "
+                   "ensure_watermark adds the mark to images that lack it.")
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "images": ("IMAGE",),
+            "filename_prefix": ("STRING", {"default": "Agate"}),
+            "release": (["auto"] + list(RELEASES), {"default": "auto",
+                        "tooltip": "auto: the release read from the image's watermark"}),
+            "ensure_watermark": ("BOOLEAN", {"default": True,
+                                 "tooltip": "Add the watermark to images in which it is not found"}),
+            "include_workflow": ("BOOLEAN", {"default": True,
+                                 "tooltip": "Also write ComfyUI's prompt/workflow chunks (they contain the prompt)"}),
+        }, "hidden": {"prompt": "PROMPT", "extra_pnginfo": "EXTRA_PNGINFO"}}
+
+    def save(self, images, filename_prefix="Agate", release="auto", ensure_watermark=True, include_workflow=True,
+             prompt=None, extra_pnginfo=None):
+        import json
+        import numpy as np
+        from PIL import Image
+        from PIL.PngImagePlugin import PngInfo
+        fp = _folder_paths()
+        out_dir = Path(fp.get_output_directory()) if fp is not None else Path("output")
+        h, w = images.shape[1], images.shape[2]
+        if fp is not None:
+            full, fname, counter, sub, _ = fp.get_save_image_path(filename_prefix, str(out_dir), w, h)
+        else:
+            out_dir.mkdir(exist_ok=True)
+            full, fname, counter, sub = str(out_dir), filename_prefix, 1, ""
+        try:
+            from comfy.cli_args import args
+            no_meta = bool(getattr(args, "disable_metadata", False))
+        except Exception:
+            no_meta = False
+        results = []
+        for b, img in enumerate(images):
+            a = (img.float().clamp(0, 1) * 255).round().to(torch.uint8).cpu().numpy()
+            rel = release
+            det = mk.detect_watermark(a) if min(a.shape[:2]) >= 64 else {"detected": False, "release": None}
+            if rel == "auto":
+                rel = det["release"]
+                if rel is None:
+                    raise ValueError("Agate Save Image: no Agate watermark found in the image, so its release is "
+                                     "unknown; pick the release instead of auto")
+            if ensure_watermark and not (det["detected"] and det["release"] == rel):
+                a = mk.mark_rgb_uint8(a, rel)
+            meta = PngInfo()
+            for k, v in mk.provenance(rel).items():
+                meta.add_text(k, v)
+            if include_workflow and not no_meta:
+                if prompt is not None:
+                    meta.add_text("prompt", json.dumps(prompt))
+                for k, v in (extra_pnginfo or {}).items():
+                    if k not in ("ai_generated", "agate"):
+                        meta.add_text(k, json.dumps(v))
+            file = f"{fname}_{counter:05}_.png"
+            Image.fromarray(np.ascontiguousarray(a)).save(str(Path(full) / file), pnginfo=meta, compress_level=4)
+            results.append({"filename": file, "subfolder": sub, "type": "output"})
+            counter += 1
+        return {"ui": {"images": results}}
 
 
 def _hook_unload_all_models() -> None:
@@ -601,6 +774,8 @@ NODE_CLASS_MAPPINGS = {
     "AgateSampler": AgateSampler,
     "AgateGenerate": AgateGenerate,
     "AgatePlanViewer": AgatePlanViewer,
+    "AgateWatermark": AgateWatermark,
+    "AgateSaveImage": AgateSaveImage,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -608,4 +783,6 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "AgateSampler": "Agate Sampler",
     "AgateGenerate": "Agate Generate",
     "AgatePlanViewer": "Agate Plan Viewer",
+    "AgateWatermark": "Agate Watermark",
+    "AgateSaveImage": "Agate Save Image",
 }

@@ -9,6 +9,10 @@ Every file is byte-identical to the release except `agate/pipeline.py`, whose
   * output_type="pt"       -- return a float (B, H, W, 3) tensor in [0, 1] instead of PIL images.
 With the defaults (callback=None, output_type="pil") it behaves exactly like the release.
 
+`agate003/` is an unmodified copy of the `agate/` folder of Logolabs/agate-preview-003 (2026-09-29): the
+multi-resolution generator (fcdm_thinker2_mr.py), its prompt pipeline (prompt_norm.py) and pipeline pieces
+(shift_t, _Eager/_Graphed). Its marking.py is not used by the nodes (agate_comfy/marking.py is the numpy port).
+
 The ComfyUI nodes do not call AgatePipeline itself (the tests use it as the parity reference):
   * runtime.py    -- the release sampler generalised to img2img, ComfyUI memory management, previews;
   * checkpoint.py -- the single-file checkpoints in ComfyUI/models/agate/ (build and load).

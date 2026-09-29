@@ -1,7 +1,7 @@
 [project]
 name = "agate-comfyui"
-version = "0.3.5"
-description = "ComfyUI nodes for Agate, LogoLabs' 260M-parameter text-to-image model: a single-file loader, a sampler that outputs SD 1.x LATENTs (img2img, live previews), an all-in-one 256x256 generator and a plan viewer that shows the thinker's 16x16 layout plan evolving over the denoising steps."
+version = "0.4.0"
+description = "ComfyUI nodes for Agate, LogoLabs' 260M-parameter text-to-image model (Preview 001, 002 and 003 at 512 px): a single-file loader, a sampler that outputs SD 1.x LATENTs (img2img, live previews), an all-in-one generator, a plan viewer, and AI-output marking (invisible watermark + provenance metadata)."
 authors = [{ name = "LogoLabs" }]
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -23,7 +23,7 @@ classifiers = [
 Repository = "https://github.com/logolabs/agate-comfyui"
 Documentation = "https://github.com/logolabs/agate-comfyui#readme"
 "Bug Tracker" = "https://github.com/logolabs/agate-comfyui/issues"
-"Model card" = "https://huggingface.co/Logolabs/agate-preview-001"
+"Model card" = "https://huggingface.co/Logolabs/agate-preview-003"
 
 [tool.comfy]
 # Same Comfy Registry publisher as logolabs/inkvec-comfyui.

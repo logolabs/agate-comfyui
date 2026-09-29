@@ -113,11 +113,16 @@ def _sampler_args(seed=0, steps=4, batch=1, denoise=1.0):
 
 def test_mappings(pack):
     mod, _, _ = pack
-    assert set(mod.NODE_CLASS_MAPPINGS) == {"AgateLoader", "AgateSampler", "AgateGenerate", "AgatePlanViewer"}
+    assert set(mod.NODE_CLASS_MAPPINGS) == {"AgateLoader", "AgateSampler", "AgateGenerate", "AgatePlanViewer",
+                                             "AgateWatermark", "AgateSaveImage"}
     assert set(mod.NODE_DISPLAY_NAME_MAPPINGS) == set(mod.NODE_CLASS_MAPPINGS)
     for cls in mod.NODE_CLASS_MAPPINGS.values():
         assert "required" in cls.INPUT_TYPES()
         assert callable(getattr(cls, cls.FUNCTION))
+    # the loader's checkpoint list is the version choice; 001 stays selectable for old workflows
+    choices = mod.NODE_CLASS_MAPPINGS["AgateLoader"].INPUT_TYPES()["required"]["checkpoint"][0]
+    assert choices[:3] == ["agate-preview-003.safetensors", "agate-preview-002.safetensors",
+                           "agate-preview-001.safetensors"]
     assert mod.NODE_CLASS_MAPPINGS["AgateSampler"].RETURN_TYPES == ("LATENT",)
     assert "latent_image" in mod.NODE_CLASS_MAPPINGS["AgateSampler"].INPUT_TYPES()["optional"]
 
@@ -206,7 +211,8 @@ def test_sampler_matches_generate(pack, agate):
     """Sampler -> decode of the LATENT is exactly the all-in-one Generate."""
     mod, nodes, _ = pack
     (lat,) = mod.NODE_CLASS_MAPPINGS["AgateSampler"]().sample(agate, **_sampler_args(seed=3))
-    (img,) = mod.NODE_CLASS_MAPPINGS["AgateGenerate"]().generate(agate, PROMPT, "", 3, 4, 3.0, 0.0, 1)
+    (img,) = mod.NODE_CLASS_MAPPINGS["AgateGenerate"]().generate(agate, PROMPT, "", 3, 4, 3.0, 0.0, 1,
+                                                                 watermark=False)
     assert img.shape == (1, 256, 256, 3) and 0.0 <= img.min().item() and img.max().item() <= 1.0
     again = agate.runtime.decode(nodes.latent_to_model(lat["samples"]).to(agate.device))
     assert (again - img).abs().max().item() <= 1 / 255
@@ -327,7 +333,7 @@ def test_plan_viewer_matches_sampler(pack, ckpt, graphs):
     mod, nodes, _ = pack
     (a,) = mod.NODE_CLASS_MAPPINGS["AgateLoader"]().load(ckpt, "sd-vae", "auto", graphs, False)
     (ref,) = mod.NODE_CLASS_MAPPINGS["AgateSampler"]().sample(a, **_sampler_args(seed=11, steps=6))
-    out = mod.NODE_CLASS_MAPPINGS["AgatePlanViewer"]().view(a, **_viewer_args(seed=11, steps=6))
+    out = mod.NODE_CLASS_MAPPINGS["AgatePlanViewer"]().view(a, **_viewer_args(seed=11, steps=6), watermark=False)
     assert torch.equal(out[7]["samples"], ref["samples"])
     img = a.runtime.decode(nodes.latent_to_model(ref["samples"]).to(a.device))
     assert (out[0] - img).abs().max().item() <= 1 / 255
@@ -373,3 +379,154 @@ def test_render_plan_docs(pack, ckpt):
         frames[0].save(out_dir / f"{name}.webp", save_all=True, append_images=frames[1:], duration=durations,
                        loop=0, quality=80, method=6)
         Image.fromarray((out[6][0].numpy() * 255).round().astype("uint8")).save(out_dir / f"{name}_change.png")
+
+
+# -- AI-output marking (agate_comfy/marking.py) ---------------------------------------------------
+
+def _synthetic(h=256, w=256, seed=0):
+    rng = np.random.default_rng(seed)
+    y, x = np.mgrid[0:h, 0:w]
+    img = np.stack([128 + 90 * np.sin(x / 17.0), 128 + 90 * np.cos(y / 23.0), (x + y) % 256], -1)
+    return np.clip(img + rng.normal(0, 6, img.shape), 0, 255).astype(np.uint8)
+
+
+def test_marking_matches_invisible_watermark(pack):
+    """The numpy port is bit-identical to invisible-watermark 0.2.0 'dwtDctSvd' (skips if not installed)."""
+    imwatermark = pytest.importorskip("imwatermark")
+    from comfyui_agate.agate_comfy import marking as mk
+    for h, w in ((256, 256), (512, 512), (301, 517)):
+        rgb = _synthetic(h, w, seed=h)
+        enc = imwatermark.WatermarkEncoder()
+        enc.set_watermark("bytes", b"AGATE003")
+        ref = enc.encode(np.ascontiguousarray(rgb[:, :, ::-1]), "dwtDctSvd")[:, :, ::-1]
+        assert np.array_equal(mk.mark_rgb_uint8(rgb, "003"), ref)
+
+
+def test_marking_roundtrip(pack):
+    from comfyui_agate.agate_comfy import marking as mk
+    from PIL import Image
+    rgb = _synthetic()
+    for rel in ("001", "002", "003"):
+        d = mk.detect_watermark(mk.mark_rgb_uint8(rgb, rel), rel)
+        assert d["detected"] and d["bit_accuracy"] == 1.0 and d["release"] == rel
+    assert not mk.detect_watermark(rgb, "003")["detected"]
+    marked = Image.fromarray(mk.mark_rgb_uint8(_synthetic(512, 512), "003"))
+    small = marked.resize((384, 384), Image.LANCZOS)
+    assert mk.detect_watermark(small, "003")["detected"], "survives a 0.75x resize (read at 512)"
+    assert mk.release_id({"release": "agate-preview-002"}) == "002"
+    assert mk.release_id({}, "my-finetune") == mk.UNKNOWN_RELEASE
+    tiny = _synthetic(128, 128)
+    assert np.array_equal(mk.mark_rgb_uint8(tiny, "003"), tiny), "under 256 x 256: unchanged"
+
+
+def test_generate_marks_by_default(pack, agate):
+    mod, _, _ = pack
+    from comfyui_agate.agate_comfy import marking as mk
+    gen = mod.NODE_CLASS_MAPPINGS["AgateGenerate"]()
+    extra = {"workflow": {"nodes": []}}
+    (img,) = gen.generate(agate, PROMPT, "", 0, 4, 3.0, 0.0, 1, extra_pnginfo=extra)
+    (plain,) = gen.generate(agate, PROMPT, "", 0, 4, 3.0, 0.0, 1, watermark=False, metadata=False)
+    a = (img[0].numpy() * 255).round().astype(np.uint8)
+    b = (plain[0].numpy() * 255).round().astype(np.uint8)
+    assert mk.detect_watermark(a, "001")["release"] == "001"
+    assert not mk.detect_watermark(b, "001")["detected"]
+    assert np.array_equal(a, mk.mark_rgb_uint8(b, "001")), "the mark is applied to the 8-bit image"
+    assert extra["ai_generated"] is True and extra["agate"]["model"] == "Logolabs/agate-preview-001"
+    # ComfyUI's Save Image truncates 255 * x: the marked bytes must come back exactly
+    saved = np.clip(255.0 * img[0].numpy(), 0, 255).astype(np.uint8)
+    assert np.array_equal(saved, a) and mk.detect_watermark(saved, "001")["release"] == "001"
+    assert "prompt" not in extra["agate"]
+
+
+def test_save_image_node(pack, tmp_path, monkeypatch):
+    mod, _, _ = pack
+    from PIL import Image
+    from comfyui_agate.agate_comfy import marking as mk
+    monkeypatch.chdir(tmp_path)
+    marked = mk.mark_rgb_uint8(_synthetic(), "002")
+    imgs = torch.from_numpy(np.stack([marked, _synthetic(seed=3)])).float() / 255
+    save = mod.NODE_CLASS_MAPPINGS["AgateSaveImage"]()
+    with pytest.raises(ValueError):                 # auto on an unmarked image: release unknown
+        save.save(imgs[1:], "x", "auto", True, True)
+    out = save.save(imgs, "agate", "002", True, True, prompt={"1": {}}, extra_pnginfo={"workflow": {}})
+    files = [tmp_path / "output" / r["filename"] for r in out["ui"]["images"]]
+    for f in files:
+        im = Image.open(f)
+        im.load()
+        assert {k: im.info[k] for k in ("ai_generated", "generator", "model", "watermark")} == mk.provenance("002")
+        assert "prompt" in im.info and "workflow" in im.info
+        assert mk.detect_watermark(im, "002")["release"] == "002"
+    assert np.array_equal(np.asarray(Image.open(files[0])), marked), "an already marked image is not re-marked"
+    out = save.save(imgs[:1], "auto", "auto", False, False)
+    im = Image.open(tmp_path / "output" / out["ui"]["images"][0]["filename"])
+    assert im.info["model"] == "Logolabs/agate-preview-002" and "workflow" not in im.info
+
+
+def test_watermark_node(pack, agate):
+    mod, _, _ = pack
+    from comfyui_agate.agate_comfy import marking as mk
+    imgs = torch.from_numpy(np.stack([_synthetic()])).float() / 255
+    (m,) = mod.NODE_CLASS_MAPPINGS["AgateWatermark"]().mark(imgs, "003", agate=agate)
+    assert mk.detect_watermark((m[0].numpy() * 255).round().astype(np.uint8), "001")["release"] == "001"
+
+
+# -- Preview 002 / 003 ----------------------------------------------------------------------------
+
+REL = Path(os.environ.get("AGATE_RELEASES", ROOT.parent / "agate_release"))
+
+
+def _version_ckpt(v):
+    p = Path(os.environ.get(f"AGATE_CKPT_{v}", REL / "comfyui_files" / f"agate-preview-{v}.safetensors"))
+    if not p.is_file():
+        pytest.skip(f"agate-preview-{v}.safetensors not available ({p})")
+    return str(p)
+
+
+@pytest.mark.parametrize("v,res,size", [("002", "auto", 256), ("003", "auto", 512), ("003", "256", 256)])
+def test_version_generate(pack, v, res, size):
+    mod, nodes, _ = pack
+    from comfyui_agate.agate_comfy import marking as mk
+    (a,) = mod.NODE_CLASS_MAPPINGS["AgateLoader"]().load(_version_ckpt(v), "sd-vae", "auto", True, False)
+    assert a.runtime.release_tag == v
+    (img,) = mod.NODE_CLASS_MAPPINGS["AgateGenerate"]().generate(
+        a, 'a shop sign that says "OPEN", three red apples, no people', "", 0, 6, 3.0, 0.0, 1, resolution=res)
+    assert img.shape == (1, size, size, 3)
+    d = mk.detect_watermark((img[0].numpy() * 255).round().astype(np.uint8), v)
+    assert d["detected"] and d["release"] == v
+    if v == "003":
+        assert a.runtime.last_prepared == ('a shop sign that says "OPEN", three red apples || spell: O P E N', "people")
+    else:
+        with pytest.raises(ValueError):
+            mod.NODE_CLASS_MAPPINGS["AgateSampler"]().sample(a, **_sampler_args(), resolution="512")
+
+
+@pytest.mark.parametrize("v,res", [("002", None), ("003", 512), ("003", 256)])
+def test_version_matches_release_pipeline(pack, v, res):
+    """The single bf16 file + the node sampler reproduce the release package (CUDA, CUDA graphs, watermark off),
+    incl. 003's prompt pipeline, count code and timestep shift."""
+    _, nodes, _ = pack
+    dev = nodes._default_device()
+    if dev.type != "cuda":
+        pytest.skip("bit-exact parity holds on CUDA")
+    root = REL / f"agate-preview-{v}"
+    if not root.is_dir():
+        pytest.skip(f"release folder {root} not available")
+    ckpt = _version_ckpt(v)
+    nodes.release_cached_model()
+    prompt = 'a shop sign that says "OPEN", three red apples, no people'
+    if v == "003":
+        from comfyui_agate.agate_comfy.agate003.pipeline import AgatePipeline as P3
+        pipe = P3(root, device=str(dev))
+        ref = pipe(prompt, seed=0, steps=8, resolution=res, watermark=False, metadata=False)[0]
+    else:
+        from comfyui_agate.agate_comfy.agate.pipeline import AgatePipeline as P1
+        pipe = P1(root, device=str(dev))
+        ref = pipe(prompt, seed=0, steps=8)[0]
+    del pipe
+    torch.cuda.empty_cache()
+    r = nodes.rt.from_single_file(ckpt, dev, True)
+    img = r.decode(r.sample(prompt, seed=0, steps=8, resolution=res))
+    r.release()
+    ref = torch.from_numpy(np.array(ref)).float() / 255
+    assert img.shape[1:3] == ref.shape[:2]
+    assert (img[0] - ref).abs().max().item() * 255 <= 1.0

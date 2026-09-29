@@ -1,0 +1,55 @@
+{
+  "1": {
+    "class_type": "AgateLoader",
+    "_meta": {
+      "title": "Agate Loader"
+    },
+    "inputs": {
+      "checkpoint": "agate-preview-003.safetensors",
+      "decoder": "sd-vae",
+      "device": "auto",
+      "cuda_graphs": true,
+      "load_guide": false,
+      "model_folder": ""
+    }
+  },
+  "2": {
+    "class_type": "AgateGenerate",
+    "_meta": {
+      "title": "Agate Generate"
+    },
+    "inputs": {
+      "prompt": "a shop sign that says \"OPEN\", three red apples on a wooden stand, no people",
+      "negative_prompt": "",
+      "seed": 0,
+      "steps": 50,
+      "cfg": 3.0,
+      "autoguide": 0.0,
+      "batch_size": 1,
+      "live_preview": "side_by_side",
+      "resolution": "auto",
+      "watermark": true,
+      "metadata": true,
+      "agate": [
+        "1",
+        0
+      ]
+    }
+  },
+  "3": {
+    "class_type": "AgateSaveImage",
+    "_meta": {
+      "title": "Agate Save Image"
+    },
+    "inputs": {
+      "filename_prefix": "agate003",
+      "release": "auto",
+      "ensure_watermark": true,
+      "include_workflow": true,
+      "images": [
+        "2",
+        0
+      ]
+    }
+  }
+}

@@ -1,10 +1,18 @@
 # Agate for ComfyUI
 
-ComfyUI nodes for **[Agate](https://huggingface.co/Logolabs/agate-preview-001)**, the 260M-parameter
-text-to-image model from [LogoLabs](https://logolabs.org). Agate was trained from scratch in 145 GPU-hours and
-scores 0.550 on GenEval with the official scorer. It renders a 256 × 256 image in under two seconds on a
-consumer GPU, and it samples in the SD 1.x latent space, so it plugs into ComfyUI's own VAE, preview,
-upscale and img2img nodes.
+ComfyUI nodes for **Agate**, the 260M-parameter text-to-image model from [LogoLabs](https://logolabs.org), in
+all three releases:
+
+| Release | Resolution | |
+|---|---|---|
+| [Preview 003](https://huggingface.co/Logolabs/agate-preview-003) (default) | 512 × 512 (or 256) | multi-resolution model; built-in prompt pipeline: quoted text is spelled out, object counts are coded, "no X" becomes a negative prompt |
+| [Preview 002](https://huggingface.co/Logolabs/agate-preview-002) | 256 × 256 | same network as 001, trained longer |
+| [Preview 001](https://huggingface.co/Logolabs/agate-preview-001) | 256 × 256 | the first preview (GenEval 0.550, official scorer) |
+
+Agate samples in the SD 1.x latent space, so it plugs into ComfyUI's own VAE, preview, upscale and img2img
+nodes. Every image the Agate nodes produce is marked as AI-generated (see
+[AI-generated output marking](#ai-generated-output-marking)). Workflows made with earlier versions of the pack
+keep working unchanged.
 
 <p align="center"><img src="docs/example.png" alt="Agate output: an orange flat-design fox head logo on a white background" width="256"></p>
 <p align="center"><sub><i>"a minimalist logo of a fox head, orange, flat design, white background"</i>, seed 0, 50 steps, cfg 3</sub></p>
@@ -38,13 +46,14 @@ transformers). Nothing in `requirements.txt` pins or replaces torch.
 
 | File | Where | |
 |---|---|---|
-| `agate-preview-001.safetensors` (522 MB) | `ComfyUI/models/agate/` | Generator + text encoder, tokenizer and config in one file. **Downloaded automatically** on first use from [`Logolabs/agate-preview-001`](https://huggingface.co/Logolabs/agate-preview-001/tree/main/comfyui) |
-| `agate-guide-27600.safetensors` (522 MB) | `ComfyUI/models/agate/` | Only for `autoguide` > 0. Downloaded automatically the first time you use it |
+| `agate-preview-003.safetensors` (529 MB) | `ComfyUI/models/agate/` | Preview 003: generator + text encoder, tokenizer and config in one file. **Downloaded automatically** on first use from [`Logolabs/agate-preview-003`](https://huggingface.co/Logolabs/agate-preview-003/tree/main/comfyui) |
+| `agate-preview-002.safetensors` (522 MB) | `ComfyUI/models/agate/` | Preview 002, from [`Logolabs/agate-preview-002`](https://huggingface.co/Logolabs/agate-preview-002/tree/main/comfyui) |
+| `agate-preview-001.safetensors` (522 MB) | `ComfyUI/models/agate/` | Preview 001, from [`Logolabs/agate-preview-001`](https://huggingface.co/Logolabs/agate-preview-001/tree/main/comfyui) |
+| `agate-guide-27600.safetensors` (522 MB) | `ComfyUI/models/agate/` | Only for `autoguide` > 0 with 001 / 002 (003 has no guide). Downloaded automatically the first time you use it |
 | `vae-ft-mse-840000-ema-pruned.safetensors` (335 MB) | `ComfyUI/models/vae/` | The SD 1.5 VAE, for the stock **VAE Decode** after **Agate Sampler**. Get it from [stabilityai/sd-vae-ft-mse-original](https://huggingface.co/stabilityai/sd-vae-ft-mse-original/blob/main/vae-ft-mse-840000-ema-pruned.safetensors); most SD 1.5 setups already have it |
 
-To install offline, download the two files from the
-[`comfyui/` folder of the model repo](https://huggingface.co/Logolabs/agate-preview-001/tree/main/comfyui) and put
-them in `ComfyUI/models/agate/` (an `agate:` entry in `extra_model_paths.yaml` works too). The model is
+Only the release you pick is downloaded. To install offline, download the file from the `comfyui/` folder of
+its model repo and put it in `ComfyUI/models/agate/` (an `agate:` entry in `extra_model_paths.yaml` works too). The model is
 public; no Hugging Face login is needed. **Agate Generate** also fetches its own decoder the first time
 (the diffusers copies of `stabilityai/sd-vae-ft-mse` or `madebyollin/taesd`, into the Hugging Face cache).
 
@@ -57,6 +66,8 @@ In [`example_workflows/`](example_workflows) (ComfyUI Manager and the Comfy Regi
 | [`agate_txt2img.json`](example_workflows/agate_txt2img.json) | Agate Loader → **Agate Sampler** → VAE Decode (SD 1.5 VAE) → Save Image |
 | [`agate_generate.json`](example_workflows/agate_generate.json) | Agate Loader → **Agate Generate** → Save Image. No VAE file needed |
 | [`agate_upscale_4x.json`](example_workflows/agate_upscale_4x.json) | txt2img → Upscale Image By (lanczos, 4×) → Save Image, for 1024 × 1024 output |
+| [`agate_003_generate.json`](example_workflows/agate_003_generate.json) | Agate Loader (003) → **Agate Generate** (512 px) → **Agate Save Image** (PNG with the provenance fields) |
+| [`agate_003_txt2img_watermark.json`](example_workflows/agate_003_txt2img_watermark.json) | Agate Loader (003) → Agate Sampler → VAE Decode → **Agate Watermark** → Save Image |
 | [`agate_plan_viewer.json`](example_workflows/agate_plan_viewer.json) | Agate Loader → **Agate Plan Viewer** → Save Image (final image), Preview Image (per-step panels), Save Animated WEBP (panels at 12 fps), Preview Image (change curve). See [See the plan](#see-the-plan) |
 
 ## Nodes
@@ -65,7 +76,7 @@ In [`example_workflows/`](example_workflows) (ComfyUI Manager and the Comfy Regi
 
 | Input | Default | |
 |---|---|---|
-| `checkpoint` | `agate-preview-001.safetensors` | Single-file checkpoints in `models/agate/`. The official one is downloaded if it is missing |
+| `checkpoint` | `agate-preview-003.safetensors` | The release: `agate-preview-003` / `-002` / `-001`, or any other single file in `models/agate/`. The official files are downloaded if they are missing |
 | `decoder` | `sd-vae` | Only used by **Agate Generate**: `sd-vae` (SD-VAE ft-MSE, best quality) or `taesd` (tiny decoder: faster and lighter, a little softer) |
 | `device` | `auto` | `auto` uses ComfyUI's device; or force `cuda` / `cpu` |
 | `cuda_graphs` | on | Records each denoising step as a CUDA graph and replays it. Agate is small enough that kernel launches, not arithmetic, dominate an eager step. Ignored off CUDA |
@@ -86,6 +97,13 @@ In [`example_workflows/`](example_workflows) (ComfyUI Manager and the Comfy Regi
 | `batch_size` | 1 | Images per run from one seed. Ignored when `latent_image` is connected |
 | `denoise` | 1.0 | With `latent_image`: how much to change it. 1.0 ignores its content (plain txt2img), 0.0 returns it unchanged |
 | `latent_image` (optional) | | An SD 1.x LATENT to start from: VAE Encode of an image, or an earlier Agate Sampler |
+| `resolution` (optional) | `auto` | Preview 003: `auto` = 512 px, or `256` (about 4× faster). 001 / 002: 256 px only |
+
+**Preview 003's prompt pipeline** runs inside the sampler, exactly as in its Python package: the prompt is
+normalised (SHOUTED or Title Cased prompts lower-cased outside quotes, "3" → "three"), "without X" / "no X"
+move to the negative prompt, text in double quotes is also spelled out letter by letter, and object counts
+are passed to the model as a count code. The console logs what the model sees. 512 px uses the SD3 timestep
+shift 2 it was trained with. On CUDA the node reproduces the package's images to within 1/255.
 
 The output is a standard SD 1.x LATENT (unscaled VAE latents, 4 × 32 × 32 for 256 px, the same
 convention as VAE Encode / VAE Decode). Decode it with **VAE Decode** and an SD 1.5 VAE, save it, or feed
@@ -103,8 +121,37 @@ latent sizes run (sides divisible by 32 px) but are out of distribution.
 
 The all-in-one node: the same inputs as Agate Sampler without the img2img ones, decoded with the loader's
 `decoder` into a standard image batch (B × 256 × 256 × 3, floats in 0–1). Use it when you do not have
-an SD 1.5 VAE file. Its images match Sampler → VAE Decode to within 5/255 per pixel (mean 0.2/255), the
-difference between the diffusers and ComfyUI VAE implementations.
+an SD 1.5 VAE file. Without marking, its images match Sampler → VAE Decode to within 5/255 per pixel (mean
+0.2/255), the difference between the diffusers and ComfyUI VAE implementations. Extra inputs: `resolution`
+(as above), `watermark` and `metadata` (both on; see below).
+
+### Agate Watermark → `IMAGE`, Agate Save Image
+
+**Agate Watermark** adds the Agate watermark to any image batch, for the Sampler → VAE Decode path (a LATENT
+cannot carry it). Connect the loader's `agate` output, or pick the release. **Agate Save Image** saves PNGs
+with the exact provenance text fields the Python packages write; `release: auto` reads the release from the
+watermark, and `ensure_watermark` marks images that lack it.
+
+## AI-generated output marking
+
+Every image made by Agate Generate and Agate Plan Viewer carries two marks (EU AI Act Art. 50(2)), the same
+as the Python packages and the [WebGPU Space](https://huggingface.co/spaces/Logolabs/agate-webgpu):
+
+- **An invisible watermark**: [invisible-watermark](https://github.com/ShieldMnt/invisible-watermark)'s
+  `dwtDctSvd` method, payload `AGATE` + release (`AGATE003` ...). `agate_comfy/marking.py` implements it in
+  plain numpy, bit-identical to the library, so no extra dependency is needed. Read it with
+  `agate.detect_watermark(img)` from the model packages, or `agate_comfy.marking.detect_watermark`.
+  `detected` means "an Agate image"; `release` names the release only when the payload reads exactly. On
+  roughly 1-2% of images, mostly flat logos on pure white, the mark cannot be read back even fresh; the
+  metadata still marks those.
+- **Provenance metadata**: `ai_generated`, `generator`, `model`, `watermark`. The prompt is not included.
+  ComfyUI's stock **Save Image** writes only the workflow's `extra_pnginfo`, JSON-encoded, so the nodes add
+  `ai_generated` (`true`) and an `agate` object with the other fields there. **Agate Save Image** writes the
+  exact keys as plain text. Both also write ComfyUI's workflow chunks, which contain the prompt (turn off
+  `include_workflow`, or run ComfyUI with `--disable-metadata`, to leave them out).
+
+Both are options on the nodes (`watermark`, `metadata`, on by default). Neither is tamper-proof. If you
+publish images made with Agate, label them as AI-generated.
 
 ## See the plan
 
@@ -192,8 +239,9 @@ was trained with. Other models keep working, but they then run with those settin
 
 ## How it works
 
-The pack vendors Agate's MIT-licensed inference code (`agate_comfy/agate/`, from the
-`agate-preview-001` release). The generator is a 191M thinker-steered convolutional flow model, the
+The pack vendors Agate's MIT-licensed inference code: `agate_comfy/agate/` from the `agate-preview-001`
+release (also runs 002, the same network) and `agate_comfy/agate003/`, an unmodified copy of 003's package
+(the multi-resolution generator, its prompt pipeline and its sampler pieces). The generator is a 191M thinker-steered convolutional flow model, the
 text encoder is a fine-tuned Ettin-68M (ModernBERT), and the image comes from the SD-VAE decoder.
 `agate_comfy/runtime.py` is the ComfyUI side: the release sampler generalised to start part-way along the
 flow path, ModelPatcher-managed weights, previews. `agate_comfy/checkpoint.py` builds the single-file
@@ -210,6 +258,8 @@ difference of 0.24/255 per pixel (a few pixels up to 73/255 at 50 steps). Load t
 
 ```bash
 AGATE_CKPT=/path/to/agate-preview-001.safetensors AGATE_SOURCE=/path/to/agate-preview-001 python -m pytest -q tests
+# 002 / 003: AGATE_CKPT_002 / AGATE_CKPT_003 (single files) and AGATE_RELEASES (the folder holding the
+# agate-preview-00X release folders) for the parity tests against the packages
 ```
 
 Runs the nodes end to end with `comfy.*` stubbed: LATENT format and scale, Sampler vs Generate, img2img at
