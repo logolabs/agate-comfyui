@@ -22,13 +22,13 @@ keep working unchanged.
 Try it in the browser first, without installing anything:
 [Agate WebGPU demo](https://huggingface.co/spaces/Logolabs/agate-webgpu).
 
-**Why we built Agate.** Agate is LogoLabs' search for the best architecture for small-scale image generation. It is
-not meant as a general image model: it is the groundwork for glyph and symbol generation, so that we can generate
-vector-native fonts to go with the wordmarks we make at LogoLabs. Font and SVG generation have almost no established
-benchmarks, so we tested the architecture on natural images, where GenEval, Qwen-Image-Bench and FID exist, as a proxy
-for architectural performance. Next, we plan to build on it to generate SVGs with our vectoriser, Inkvec, and to
-improve Inkvec's prior with flow matching to help trace the fonts. We decided to release Agate to share
-these architectural efforts.
+**Why we built Agate.** Agate is LogoLabs' search for the best architecture for small-scale image generation, as
+groundwork for glyph and symbol generation: we want to generate vector-native fonts to go with the wordmarks we make at
+LogoLabs. We trained a general text-to-image model because general image generation is a good proxy for how an
+architecture performs on those tasks, and it is very benchmark-friendly (GenEval, Qwen-Image-Bench, FID), unlike tasks
+such as SDF generation, which have almost no established benchmarks. Next, we plan to build on it to generate SVGs with
+our vectoriser, Inkvec, and to improve Inkvec's prior with flow matching to help trace the fonts. We decided to release
+Agate to share these architectural efforts.
 
 ## Install
 
